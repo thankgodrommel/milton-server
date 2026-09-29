@@ -100,6 +100,12 @@ function buildWhere(query) {
   return where;
 }
 
+function hideCaTestFromStudent(record, req) {
+  const roles = [req.user?.role, ...(Array.isArray(req.user?.roles) ? req.user.roles : [])]
+    .map((role) => String(role || "").toLowerCase());
+  return roles.includes("student") && record.exam_type === "C.A.Test" ? null : record;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /api/entities/:model — list all
 // ─────────────────────────────────────────────────────────────────────────────
@@ -125,7 +131,7 @@ router.get(
       const take = req.query._limit ? parseInt(req.query._limit) : undefined;
 
       const records = await db.findMany({ orderBy, take });
-      return res.json(toUIEnums(records));
+      return res.json(toUIEnums(records).filter((record) => hideCaTestFromStudent(record, req)));
     } catch (err) {
       console.error(`[GET /${model}]`, err);
       return res.status(500).json({ error: err.message });
@@ -160,7 +166,7 @@ router.get(
       const take = req.query._limit ? parseInt(req.query._limit) : undefined;
 
       const records = await db.findMany({ where, orderBy, take });
-      return res.json(toUIEnums(records));
+      return res.json(toUIEnums(records).filter((record) => hideCaTestFromStudent(record, req)));
     } catch (err) {
       console.error(`[GET /${model}/filter]`, err);
       return res.status(500).json({ error: err.message });
@@ -191,7 +197,9 @@ router.get(
     try {
       const record = await db.findUnique({ where: { id: req.params.id } });
       if (!record) return res.status(404).json({ error: "Record not found." });
-      return res.json(toUIEnums(record));
+      const visibleRecord = hideCaTestFromStudent(toUIEnums(record), req);
+      if (!visibleRecord) return res.status(404).json({ error: "Record not found." });
+      return res.json(visibleRecord);
     } catch (err) {
       console.error(`[GET /${model}/:id]`, err);
       return res.status(500).json({ error: err.message });
@@ -231,6 +239,17 @@ router.post(
 
       if (model === "AdmissionApplication" && req.user) {
         rawData.created_by_id = req.user.id;
+      }
+
+      if (model === "CBTExam" && rawData.exam_type === "C.A.Test" && rawData.status === "Published") {
+        return res.status(400).json({ error: "Generate C.A.Test student PINs before publishing." });
+      }
+
+      if (model === "CBTResult" && rawData.exam_id) {
+        const exam = await prisma.cBTExam.findUnique({ where: { id: rawData.exam_id } });
+        if (exam?.exam_type === "C.A.Test") {
+          return res.status(400).json({ error: "C.A.Test results must be submitted with the student's test PIN." });
+        }
       }
 
       if (model === "AssignmentSubmission") {
@@ -291,6 +310,13 @@ router.patch(
       } = req.body;
 
       if (model === "Student" && req.user?.role === "student") {
+
+              if (model === "CBTExam" && rawData.status === "Published") {
+                const existingExam = await prisma.cBTExam.findUnique({ where: { id } });
+                if ((rawData.exam_type || existingExam?.exam_type) === "C.A.Test") {
+                  return res.status(400).json({ error: "Publish C.A.Tests through the PIN-validated publish endpoint." });
+                }
+              }
         const studentId = req.user.id || req.user.profile_id;
         if (studentId !== id) {
           return res.status(403).json({ error: "You can only update your own student profile." });

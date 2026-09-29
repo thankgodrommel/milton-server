@@ -12,6 +12,7 @@ import handleAdmissionResponseRoute from "./routes/functions/handleAdmissionResp
 import logsRoute from "./routes/logs.js";
 import integrationsRoutes from "./routes/integrations.js";
 import resultsRoutes from "./routes/results.js";
+import cbtRoutes from "./routes/cbt.js";
 
 dotenv.config();
 
@@ -29,6 +30,7 @@ app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
 // Routes
 app.use("/api/auth", authRoutes);
+app.use("/api/cbt", cbtRoutes);
 app.use("/api/results", resultsRoutes);
 app.use("/api/entities", entityRoutes);
 app.use("/api/integrations", integrationsRoutes);

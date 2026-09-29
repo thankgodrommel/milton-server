@@ -842,6 +842,7 @@ model CBTExam {
   title            String
   description      String?  @db.Text
   exam_type        String?
+  ca_test_number   String?
   // Multi-class targeting
   class            String?
   classes          Json?
@@ -889,6 +890,7 @@ model CBTResult {
   percentage         Float?
   grade              String?
   time_taken_minutes Int?
+  time_taken_seconds Int?
   // Legacy fields
   total_questions    Int?
   correct_answers    Int?
@@ -915,6 +917,7 @@ model CBTExamPassword {
   class            String?
   password         String
   used             Boolean  @default(false)
+  started_at       String?
   generated_by     String?
   generated_date   String?
   created_date     DateTime @default(now()) @map("created_date")

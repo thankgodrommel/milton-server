@@ -244,8 +244,8 @@ export const ROLE_RULES = {
 
   CBTExamPassword: {
     list: ["admin", "teacher", "principal"],
-    filter: ["admin", "teacher", "student"],
-    get: ["admin", "teacher", "student"],
+    filter: ["admin", "teacher", "principal"],
+    get: ["admin", "teacher", "principal"],
     create: ["admin", "teacher"],
     update: ["admin", "teacher"],
     delete: ["admin"],
