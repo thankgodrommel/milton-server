@@ -200,10 +200,11 @@ router.post("/exams/:examId/publish", authorize("admin", "teacher"), async (req,
     }
     const examClasses = Array.isArray(exam.classes) ? exam.classes : [];
     if (examClasses.length !== 1) return res.status(400).json({ error: "A C.A.Test must target exactly one class." });
-    const students = await prisma.student.count({
+    const students = await prisma.student.findMany({
       where: { current_class: examClasses[0], status: "Active" },
+      select: { id: true },
     });
-    if (students === 0) return res.status(400).json({ error: "No active students are enrolled in this class." });
+    if (students.length === 0) return res.status(400).json({ error: "No active students are enrolled in this class." });
     const publishedExam = await prisma.cBTExam.update({
       where: { id: exam.id },
       data: { status: "Published" },
@@ -293,7 +294,7 @@ router.post("/submit", authorize("student"), async (req, res) => {
     }
     if (access.error) return res.status(access.status).json({ error: access.error });
     const { student, pinRecord, exam } = access;
-    if (!pinRecord.started_at) {
+    if (!pinRecord?.started_at) {
       return res.status(409).json({ error: "Open the C.A.Test with your PIN before submitting." });
     }
     const elapsedSeconds = Math.max(0, Math.floor((now - new Date(pinRecord.started_at)) / 1000));
