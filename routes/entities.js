@@ -242,13 +242,13 @@ router.post(
       }
 
       if (model === "CBTExam" && rawData.exam_type === "C.A.Test" && rawData.status === "Published") {
-        return res.status(400).json({ error: "Generate C.A.Test student PINs before publishing." });
+        return res.status(400).json({ error: "Publish C.A.Tests through the C.A.Test publish endpoint." });
       }
 
       if (model === "CBTResult" && rawData.exam_id) {
         const exam = await prisma.cBTExam.findUnique({ where: { id: rawData.exam_id } });
         if (exam?.exam_type === "C.A.Test") {
-          return res.status(400).json({ error: "C.A.Test results must be submitted with the student's test PIN." });
+          return res.status(400).json({ error: "C.A.Test results must use the C.A.Test submission endpoint." });
         }
       }
 
@@ -314,7 +314,7 @@ router.patch(
               if (model === "CBTExam" && rawData.status === "Published") {
                 const existingExam = await prisma.cBTExam.findUnique({ where: { id } });
                 if ((rawData.exam_type || existingExam?.exam_type) === "C.A.Test") {
-                  return res.status(400).json({ error: "Publish C.A.Tests through the PIN-validated publish endpoint." });
+                  return res.status(400).json({ error: "Publish C.A.Tests through the C.A.Test publish endpoint." });
                 }
               }
         const studentId = req.user.id || req.user.profile_id;

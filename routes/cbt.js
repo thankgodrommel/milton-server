@@ -1,4 +1,4 @@
-import { randomInt } from "node:crypto";
+import { randomInt, randomUUID } from "node:crypto";
 import { Router } from "express";
 import prisma from "../config/prisma.js";
 import { authenticate, authorize } from "../middleware/auth.js";
@@ -17,8 +17,10 @@ function examIsOpen(exam, now = new Date(), allowStartedAttempt = false, started
 }
 
 function publicExam(exam) {
+  const safeExam = { ...exam };
+  delete safeExam.exam_password;
   return {
-    ...exam,
+    ...safeExam,
     questions: (Array.isArray(exam.questions) ? exam.questions : []).map(
       ({ correct_answer, ...question }) => question,
     ),
@@ -61,6 +63,58 @@ async function getPinAccess(user, pin, now = new Date(), allowStartedAttempt = f
   if (existingResult) return { error: "You have already taken this C.A.Test.", status: 409 };
   return { student, pinRecord, exam };
 }
+
+async function getStudentExamAccess(user, examId, now = new Date(), allowStartedAttempt = false) {
+  const student = await getStudent(user);
+  if (!student) return { error: "Student record not found.", status: 404 };
+  const exam = await prisma.cBTExam.findUnique({ where: { id: examId } });
+  if (!exam || exam.exam_type !== "C.A.Test") {
+    return { error: "C.A.Test not found.", status: 404 };
+  }
+  const examClasses = Array.isArray(exam.classes) ? exam.classes : exam.class ? [exam.class] : [];
+  if (!examClasses.includes(student.current_class)) {
+    return { error: "This C.A.Test is not assigned to your class.", status: 403 };
+  }
+  const pinRecord = await prisma.cBTExamPassword.findFirst({
+    where: { exam_id: exam.id, student_id: student.id },
+    orderBy: { created_date: "asc" },
+  });
+  if (pinRecord?.used) return { error: "You have already taken this C.A.Test.", status: 409 };
+  if (!examIsOpen(exam, now, allowStartedAttempt, pinRecord?.started_at)) {
+    return { error: "This C.A.Test is not open or has expired.", status: 410 };
+  }
+  const existingResult = await prisma.cBTResult.findFirst({
+    where: { exam_id: exam.id, student_id: student.id },
+  });
+  if (existingResult) return { error: "You have already taken this C.A.Test.", status: 409 };
+  return { student, pinRecord, exam };
+}
+
+router.get("/available", authorize("student"), async (req, res) => {
+  try {
+    const student = await getStudent(req.user);
+    if (!student) return res.status(404).json({ error: "Student record not found." });
+    const [exams, results] = await Promise.all([
+      prisma.cBTExam.findMany({ where: { status: "Published" }, orderBy: { created_date: "desc" } }),
+      prisma.cBTResult.findMany({ where: { student_id: student.id }, select: { exam_id: true } }),
+    ]);
+    const now = new Date();
+    const takenIds = new Set(results.map(({ exam_id }) => exam_id));
+    const available = exams.filter((exam) => {
+      const classes = Array.isArray(exam.classes) ? exam.classes : exam.class ? [exam.class] : [];
+      if (!classes.includes(student.current_class) || takenIds.has(exam.id)) return false;
+      if (exam.start_date && (!Number.isFinite(new Date(exam.start_date).getTime()) || new Date(exam.start_date) > now)) return false;
+      if (exam.end_date && (!Number.isFinite(new Date(exam.end_date).getTime()) || new Date(exam.end_date) < now)) return false;
+      return true;
+    });
+    return res.json(available.map((exam) => (
+      exam.exam_type === "C.A.Test" ? publicExam(exam) : exam
+    )));
+  } catch (error) {
+    console.error("[GET /cbt/available]", error);
+    return res.status(500).json({ error: "Unable to load available CBT exams." });
+  }
+});
 
 router.post("/exams/:examId/pins", authorize("admin", "teacher"), async (req, res) => {
   try {
@@ -146,19 +200,10 @@ router.post("/exams/:examId/publish", authorize("admin", "teacher"), async (req,
     }
     const examClasses = Array.isArray(exam.classes) ? exam.classes : [];
     if (examClasses.length !== 1) return res.status(400).json({ error: "A C.A.Test must target exactly one class." });
-    const students = await prisma.student.findMany({
+    const students = await prisma.student.count({
       where: { current_class: examClasses[0], status: "Active" },
-      select: { id: true },
     });
-    const pins = await prisma.cBTExamPassword.findMany({
-      where: { exam_id: exam.id },
-      select: { student_id: true },
-    });
-    const pinStudentIds = new Set(pins.map((pin) => pin.student_id));
-    const pinCodes = new Set(pins.map((pin) => pin.password));
-    if (students.length === 0 || students.length !== pins.length || pinCodes.size !== pins.length || pins.some((pin) => pin.used) || students.some((student) => !pinStudentIds.has(student.id))) {
-      return res.status(400).json({ error: "Generate a PIN for every active student in the selected class before publishing." });
-    }
+    if (students === 0) return res.status(400).json({ error: "No active students are enrolled in this class." });
     const publishedExam = await prisma.cBTExam.update({
       where: { id: exam.id },
       data: { status: "Published" },
@@ -167,6 +212,45 @@ router.post("/exams/:examId/publish", authorize("admin", "teacher"), async (req,
   } catch (error) {
     console.error("[POST /cbt/exams/:examId/publish]", error);
     return res.status(500).json({ error: "Unable to publish this C.A.Test." });
+  }
+});
+
+router.post("/exams/:examId/start", authorize("student"), async (req, res) => {
+  try {
+    const access = await getStudentExamAccess(req.user, req.params.examId);
+    if (access.error) return res.status(access.status).json({ error: access.error });
+    let { student, pinRecord, exam } = access;
+    if (!pinRecord) {
+      pinRecord = await prisma.cBTExamPassword.create({
+        data: {
+          exam_id: exam.id,
+          exam_title: exam.title,
+          subject_name: exam.subject_name,
+          student_id: student.id,
+          student_name: `${student.first_name} ${student.last_name}`.trim(),
+          admission_number: student.admission_number,
+          class: student.current_class,
+          password: randomUUID(),
+          started_at: new Date().toISOString(),
+        },
+      });
+    } else if (!pinRecord.started_at) {
+      const startedAt = new Date().toISOString();
+      await prisma.cBTExamPassword.updateMany({
+        where: { id: pinRecord.id, started_at: null, used: false },
+        data: { started_at: startedAt },
+      });
+      pinRecord = await prisma.cBTExamPassword.findUnique({ where: { id: pinRecord.id } });
+    }
+    const durationSeconds = Math.max(1, Number(exam.duration_minutes) || 1) * 60;
+    const elapsedSeconds = Math.max(0, Math.floor((Date.now() - new Date(pinRecord.started_at).getTime()) / 1000));
+    if (elapsedSeconds > durationSeconds + 60) {
+      return res.status(410).json({ error: "The C.A.Test duration has expired." });
+    }
+    return res.json({ exam: publicExam(exam), started_at: pinRecord.started_at });
+  } catch (error) {
+    console.error("[POST /cbt/exams/:examId/start]", error);
+    return res.status(500).json({ error: "Unable to start this C.A.Test." });
   }
 });
 
@@ -198,7 +282,15 @@ router.post("/access", authorize("student"), async (req, res) => {
 router.post("/submit", authorize("student"), async (req, res) => {
   try {
     const now = new Date();
-    const access = await getPinAccess(req.user, req.body.pin, now, true);
+    let access;
+    if (req.body.exam_id) {
+      access = await getStudentExamAccess(req.user, req.body.exam_id, now, true);
+      if (!access.error && !access.pinRecord?.started_at) {
+        return res.status(409).json({ error: "Start the C.A.Test before submitting." });
+      }
+    } else {
+      access = await getPinAccess(req.user, req.body.pin, now, true);
+    }
     if (access.error) return res.status(access.status).json({ error: access.error });
     const { student, pinRecord, exam } = access;
     if (!pinRecord.started_at) {
