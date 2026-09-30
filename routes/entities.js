@@ -100,10 +100,16 @@ function buildWhere(query) {
   return where;
 }
 
-function hideCaTestFromStudent(record, req) {
+function sanitizeExamForStudent(record, req, model) {
+  if (model !== "CBTExam") return record;
   const roles = [req.user?.role, ...(Array.isArray(req.user?.roles) ? req.user.roles : [])]
     .map((role) => String(role || "").toLowerCase());
-  return roles.includes("student") && record.exam_type === "C.A.Test" ? null : record;
+  if (!roles.includes("student")) return record;
+  if (record.status !== "Published") return null;
+  const safeExam = { ...record };
+  delete safeExam.questions;
+  delete safeExam.exam_password;
+  return safeExam;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -131,7 +137,7 @@ router.get(
       const take = req.query._limit ? parseInt(req.query._limit) : undefined;
 
       const records = await db.findMany({ orderBy, take });
-      return res.json(toUIEnums(records).filter((record) => hideCaTestFromStudent(record, req)));
+      return res.json(toUIEnums(records).filter((record) => sanitizeExamForStudent(record, req, model)));
     } catch (err) {
       console.error(`[GET /${model}]`, err);
       return res.status(500).json({ error: err.message });
@@ -166,7 +172,7 @@ router.get(
       const take = req.query._limit ? parseInt(req.query._limit) : undefined;
 
       const records = await db.findMany({ where, orderBy, take });
-      return res.json(toUIEnums(records).filter((record) => hideCaTestFromStudent(record, req)));
+      return res.json(toUIEnums(records).filter((record) => sanitizeExamForStudent(record, req, model)));
     } catch (err) {
       console.error(`[GET /${model}/filter]`, err);
       return res.status(500).json({ error: err.message });
@@ -197,7 +203,7 @@ router.get(
     try {
       const record = await db.findUnique({ where: { id: req.params.id } });
       if (!record) return res.status(404).json({ error: "Record not found." });
-      const visibleRecord = hideCaTestFromStudent(toUIEnums(record), req);
+      const visibleRecord = sanitizeExamForStudent(toUIEnums(record), req, model);
       if (!visibleRecord) return res.status(404).json({ error: "Record not found." });
       return res.json(visibleRecord);
     } catch (err) {
@@ -241,15 +247,16 @@ router.post(
         rawData.created_by_id = req.user.id;
       }
 
-      if (model === "CBTExam" && rawData.exam_type === "C.A.Test" && rawData.status === "Published") {
-        return res.status(400).json({ error: "Publish C.A.Tests through the C.A.Test publish endpoint." });
+      if (model === "CBTExam" && rawData.status === "Published") {
+        return res.status(400).json({ error: "Publish exams through the PIN-validated publish endpoint." });
       }
 
-      if (model === "CBTResult" && rawData.exam_id) {
-        const exam = await prisma.cBTExam.findUnique({ where: { id: rawData.exam_id } });
-        if (exam?.exam_type === "C.A.Test") {
-          return res.status(400).json({ error: "C.A.Test results must use the C.A.Test submission endpoint." });
-        }
+      if (
+        model === "CBTResult" &&
+        [req.user?.role, ...(Array.isArray(req.user?.roles) ? req.user.roles : [])]
+          .some((role) => String(role || "").toLowerCase() === "student")
+      ) {
+        return res.status(400).json({ error: "CBT results must be submitted using the student's exam PIN." });
       }
 
       if (model === "AssignmentSubmission") {
@@ -309,14 +316,32 @@ router.patch(
         ...rawData
       } = req.body;
 
-      if (model === "Student" && req.user?.role === "student") {
+      if (model === "CBTExam") {
+        const existingExam = await prisma.cBTExam.findUnique({ where: { id } });
+        if (rawData.status === "Published" && existingExam?.status !== "Published") {
+          return res.status(400).json({ error: "Publish exams through the PIN-validated publish endpoint." });
+        }
+        if (existingExam?.status === "Published") {
+          const changesExamAttempt = [
+            "exam_type", "subject_id", "classes", "questions", "duration_minutes",
+            "start_date", "end_date", "batch_count", "students_per_batch", "batch_settings",
+          ].some((field) => rawData[field] !== undefined);
+          if (changesExamAttempt) {
+            const [startedAttempts, results] = await Promise.all([
+              prisma.cBTExamPassword.count({
+                where: { exam_id: id, OR: [{ started_at: { not: null } }, { used: true }] },
+              }),
+              prisma.cBTResult.count({ where: { exam_id: id } }),
+            ]);
+            if (startedAttempts > 0 || results > 0) {
+              return res.status(409).json({ error: "Exam settings cannot be changed after a student has started." });
+            }
+          }
+          if (rawData.status === "Published") delete rawData.status;
+        }
+      }
 
-              if (model === "CBTExam" && rawData.status === "Published") {
-                const existingExam = await prisma.cBTExam.findUnique({ where: { id } });
-                if ((rawData.exam_type || existingExam?.exam_type) === "C.A.Test") {
-                  return res.status(400).json({ error: "Publish C.A.Tests through the C.A.Test publish endpoint." });
-                }
-              }
+      if (model === "Student" && req.user?.role === "student") {
         const studentId = req.user.id || req.user.profile_id;
         if (studentId !== id) {
           return res.status(403).json({ error: "You can only update your own student profile." });

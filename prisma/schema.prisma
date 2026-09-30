@@ -846,6 +846,10 @@ model CBTExam {
   // Multi-class targeting
   class            String?
   classes          Json?
+  batch_count      Int?     @default(1)
+  students_per_batch Int?   @default(40)
+  batch_settings   Json?
+  active_batches   Json?
   section          Section?
   subject_id       String?
   subject_name     String?
@@ -883,6 +887,7 @@ model CBTResult {
   student_name       String?
   admission_number   String?
   class              String?
+  batch_number       Int?
   answers            Json?
   score              Float?
   theory_score       Float?          @default(0)
@@ -915,6 +920,7 @@ model CBTExamPassword {
   student_name     String?
   admission_number String?
   class            String?
+  batch_number     Int?
   password         String
   used             Boolean  @default(false)
   started_at       String?
