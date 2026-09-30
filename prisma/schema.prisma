@@ -766,6 +766,7 @@ model Assignment {
   teacher_id   String?
   teacher_name String?
   due_date     String?
+  reopened_student_ids Json?
   max_score    Float?         @default(100)
   total_marks  Float?
   file_url     String?        @db.Text

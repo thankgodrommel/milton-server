@@ -112,6 +112,36 @@ function sanitizeExamForStudent(record, req, model) {
   return safeExam;
 }
 
+function isStaffUser(req) {
+  return [req.user?.role, ...(Array.isArray(req.user?.roles) ? req.user.roles : [])]
+    .some((role) => ["admin", "teacher", "head_teacher", "principal", "director"].includes(String(role || "").toLowerCase()));
+}
+
+async function validateAssignmentSubmissionAccess(req, assignment, existingSubmission = null) {
+  if (isStaffUser(req)) return null;
+  const studentId = req.user?.profile_id || req.user?.id;
+  if (!studentId || (existingSubmission && existingSubmission.student_id !== studentId)) {
+    return { status: 403, error: "You can only submit your own assignment." };
+  }
+  const student = await prisma.student.findUnique({ where: { id: studentId } });
+  if (!student || student.current_class !== assignment.class) {
+    return { status: 403, error: "This assignment is not assigned to your class." };
+  }
+  if (existingSubmission?.status === "Graded") {
+    return { status: 403, error: "This assignment has already been graded." };
+  }
+  if (Array.isArray(assignment.reopened_student_ids) && !assignment.reopened_student_ids.includes(studentId)) {
+    return { status: 403, error: "This assignment extension is only available to students who have not submitted." };
+  }
+  if (assignment.due_date) {
+    const dueDate = new Date(assignment.due_date.includes("T") ? assignment.due_date : `${assignment.due_date}T23:59:59`);
+    if (Number.isFinite(dueDate.getTime()) && new Date() > dueDate) {
+      return { status: 400, error: "The deadline for this assignment has expired. Submissions are closed." };
+    }
+  }
+  return null;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /api/entities/:model — list all
 // ─────────────────────────────────────────────────────────────────────────────
@@ -261,18 +291,34 @@ router.post(
 
       if (model === "AssignmentSubmission") {
         const assignmentId = rawData.assignment_id;
-        if (assignmentId) {
+        if (!isStaffUser(req) && assignmentId) {
           const assignment = await prisma.assignment.findUnique({ where: { id: assignmentId } });
-          if (assignment && assignment.due_date) {
-            const dueDate = new Date(assignment.due_date.includes("T") ? assignment.due_date : assignment.due_date + "T23:59:59");
-            if (new Date() > dueDate) {
-              const userRoles = [req.user?.role, ...(Array.isArray(req.user?.roles) ? req.user.roles : [])].map(r => (r || '').toLowerCase());
-              const isStaff = ["admin", "teacher", "head_teacher", "principal", "director"].some(r => userRoles.includes(r));
-              if (!isStaff) {
-                return res.status(400).json({ error: "The deadline for this assignment has expired. Submissions are closed." });
-              }
-            }
+          if (!assignment) return res.status(404).json({ error: "Assignment not found." });
+          const accessError = await validateAssignmentSubmissionAccess(req, assignment);
+          if (accessError) return res.status(accessError.status).json({ error: accessError.error });
+          const existingSubmission = await prisma.assignmentSubmission.findFirst({
+            where: { assignment_id: assignmentId, student_id: req.user?.profile_id || req.user?.id },
+          });
+          if (existingSubmission) {
+            return res.status(409).json({ error: "A submission already exists. Update your existing submission instead." });
           }
+          const studentId = req.user?.profile_id || req.user?.id;
+          const student = await prisma.student.findUnique({ where: { id: studentId } });
+          if (rawData.student_id && rawData.student_id !== studentId) {
+            return res.status(403).json({ error: "You can only submit your own assignment." });
+          }
+          rawData.student_id = studentId;
+          rawData.student_name = `${student.first_name} ${student.last_name}`.trim();
+          rawData.admission_number = student.admission_number;
+          rawData.class = student.current_class;
+          rawData.assignment_title = assignment.title;
+          rawData.total_marks = assignment.total_marks || assignment.max_score || 10;
+          rawData.status = "Submitted";
+          delete rawData.score;
+          delete rawData.feedback;
+          delete rawData.teacher_feedback;
+          delete rawData.graded_by;
+          delete rawData.graded_date;
         }
       }
 
@@ -316,12 +362,64 @@ router.patch(
         ...rawData
       } = req.body;
 
+      if (model === "Assignment") {
+        const existingAssignment = await prisma.assignment.findUnique({ where: { id } });
+        if (existingAssignment) {
+          const currentDueDate = existingAssignment.due_date
+            ? new Date(existingAssignment.due_date.includes("T") ? existingAssignment.due_date : `${existingAssignment.due_date}T23:59:59`)
+            : null;
+          const isOverdue = currentDueDate && Number.isFinite(currentDueDate.getTime()) && currentDueDate < new Date();
+          const canReopen = isOverdue || existingAssignment.status === "Closed";
+          const dueDateChanged = rawData.due_date !== undefined && rawData.due_date !== existingAssignment.due_date;
+          const allowlistChanged = rawData.reopened_student_ids !== undefined &&
+            JSON.stringify(rawData.reopened_student_ids) !== JSON.stringify(existingAssignment.reopened_student_ids);
+
+          if (allowlistChanged && !canReopen) {
+            return res.status(400).json({ error: "Reopen an overdue assignment through the incomplete-student flow." });
+          }
+          if (canReopen && (dueDateChanged || allowlistChanged)) {
+            if (!rawData.due_date) {
+              return res.status(400).json({ error: "Set a new due date when reopening an assignment." });
+            }
+            const newDueDate = new Date(rawData.due_date.includes("T") ? rawData.due_date : `${rawData.due_date}T23:59:59`);
+            if (!Number.isFinite(newDueDate.getTime()) || newDueDate <= new Date()) {
+              return res.status(400).json({ error: "Choose a future due date to reopen this assignment." });
+            }
+            if (!Array.isArray(rawData.reopened_student_ids)) {
+              return res.status(400).json({ error: "Select only active students who have not submitted before extending the due date." });
+            }
+            const [students, existingSubmissions] = await Promise.all([
+              prisma.student.findMany({
+                where: { current_class: existingAssignment.class, status: "Active" },
+                select: { id: true },
+              }),
+              prisma.assignmentSubmission.findMany({
+                where: { assignment_id: id },
+                select: { student_id: true },
+              }),
+            ]);
+            const submittedIds = new Set(existingSubmissions.map(({ student_id }) => student_id));
+            const eligibleIds = new Set(students.filter(({ id: studentId }) => !submittedIds.has(studentId)).map(({ id: studentId }) => studentId));
+            const requestedIds = new Set(rawData.reopened_student_ids);
+            if (
+              requestedIds.size !== rawData.reopened_student_ids.length ||
+              requestedIds.size !== eligibleIds.size ||
+              [...requestedIds].some((studentId) => !eligibleIds.has(studentId))
+            ) {
+              return res.status(400).json({ error: "The reopen list must contain exactly the active students who have not submitted." });
+            }
+          }
+        }
+      }
+
       if (model === "CBTExam") {
         const existingExam = await prisma.cBTExam.findUnique({ where: { id } });
         if (rawData.status === "Published" && existingExam?.status !== "Published") {
           return res.status(400).json({ error: "Publish exams through the PIN-validated publish endpoint." });
         }
         if (existingExam?.status === "Published") {
+          const currentEndTime = existingExam.end_date ? new Date(existingExam.end_date) : null;
+          const isExpired = currentEndTime && Number.isFinite(currentEndTime.getTime()) && currentEndTime < new Date();
           const changesExamAttempt = [
             "exam_type", "subject_id", "classes", "questions", "duration_minutes",
             "start_date", "end_date", "batch_count", "students_per_batch", "batch_settings",
@@ -333,7 +431,7 @@ router.patch(
               }),
               prisma.cBTResult.count({ where: { exam_id: id } }),
             ]);
-            if (startedAttempts > 0 || results > 0) {
+            if ((startedAttempts > 0 || results > 0) && !isExpired) {
               return res.status(409).json({ error: "Exam settings cannot be changed after a student has started." });
             }
           }
@@ -355,20 +453,26 @@ router.patch(
       }
 
       if (model === "AssignmentSubmission") {
-        const userRoles = [req.user?.role, ...(Array.isArray(req.user?.roles) ? req.user.roles : [])].map(r => (r || '').toLowerCase());
-        const isStaff = ["admin", "teacher", "head_teacher", "principal", "director"].some(r => userRoles.includes(r));
-        if (!isStaff) {
+        if (!isStaffUser(req)) {
           const existingSub = await prisma.assignmentSubmission.findUnique({ where: { id } });
-          const assignmentId = rawData.assignment_id || existingSub?.assignment_id;
-          if (assignmentId) {
-            const assignment = await prisma.assignment.findUnique({ where: { id: assignmentId } });
-            if (assignment && assignment.due_date) {
-              const dueDate = new Date(assignment.due_date.includes("T") ? assignment.due_date : assignment.due_date + "T23:59:59");
-              if (new Date() > dueDate) {
-                return res.status(400).json({ error: "The deadline for this assignment has expired. Submissions are closed." });
-              }
-            }
+          if (!existingSub) return res.status(404).json({ error: "Submission not found." });
+          if (existingSub.student_id !== (req.user?.profile_id || req.user?.id)) {
+            return res.status(403).json({ error: "You can only update your own submission." });
           }
+          if (rawData.assignment_id && rawData.assignment_id !== existingSub.assignment_id) {
+            return res.status(403).json({ error: "A submission cannot be moved to another assignment." });
+          }
+          const assignmentId = existingSub.assignment_id;
+          if (!assignmentId) return res.status(404).json({ error: "Assignment not found." });
+          const assignment = await prisma.assignment.findUnique({ where: { id: assignmentId } });
+          if (!assignment) return res.status(404).json({ error: "Assignment not found." });
+          const accessError = await validateAssignmentSubmissionAccess(req, assignment, existingSub);
+          if (accessError) return res.status(accessError.status).json({ error: accessError.error });
+          const allowedStudentFields = new Set(["file_url", "submission_text", "text_response", "submitted_at", "submitted_date"]);
+          for (const field of Object.keys(rawData)) {
+            if (!allowedStudentFields.has(field)) delete rawData[field];
+          }
+          rawData.status = "Submitted";
         }
       }
 

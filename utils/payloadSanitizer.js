@@ -268,6 +268,7 @@ export const SCHEMA_FIELD_MAP = {
     teacher_id: { type: "String", isOptional: true },
     teacher_name: { type: "String", isOptional: true },
     due_date: { type: "String", isOptional: true },
+    reopened_student_ids: { type: "Json", isOptional: true },
     max_score: { type: "Float", isOptional: true },
     total_marks: { type: "Float", isOptional: true },
     file_url: { type: "String", isOptional: true },

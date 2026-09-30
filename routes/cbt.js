@@ -139,25 +139,35 @@ router.post("/exams/:examId/pins", authorize("admin", "teacher"), async (req, re
     if (!roles.some((role) => ["admin", "director"].includes(role)) && exam.created_by !== req.user?.email) {
       return res.status(403).json({ error: "You can only generate PINs for your own exam." });
     }
-    if (!['Draft', 'Published'].includes(exam.status)) {
+    if (!['Draft', 'Published', 'Closed'].includes(exam.status)) {
       return res.status(409).json({ error: "Generate student PINs before the exam is closed." });
     }
     const classes = examClasses(exam);
     if (classes.length === 0) {
       return res.status(400).json({ error: "Select at least one class before generating PINs." });
     }
-    const existingResults = await prisma.cBTResult.count({ where: { exam_id: exam.id } });
-    if (existingResults > 0) return res.status(409).json({ error: "PINs cannot be regenerated after students have submitted." });
+    const results = await prisma.cBTResult.findMany({
+      where: { exam_id: exam.id },
+      select: { student_id: true },
+    });
+    const completedStudentIds = new Set(results.map(({ student_id }) => student_id));
+    const existingPins = await prisma.cBTExamPassword.findMany({
+      where: { exam_id: exam.id },
+      select: { id: true, password: true, student_id: true, class: true },
+    });
     if (exam.status === "Published") {
-      const existingAttempts = await prisma.cBTExamPassword.count({
-        where: { exam_id: exam.id, OR: [{ started_at: { not: null } }, { used: true }] },
-      });
-      if (existingAttempts > 0) {
-        return res.status(409).json({ error: "PINs cannot be regenerated after a student has started." });
+      const endTime = exam.end_date ? new Date(exam.end_date) : null;
+      if (!endTime || !Number.isFinite(endTime.getTime()) || endTime > new Date()) {
+        const existingAttempts = await prisma.cBTExamPassword.count({
+          where: { exam_id: exam.id, OR: [{ started_at: { not: null } }, { used: true }] },
+        });
+        if (existingAttempts > 0 || results.length > 0) {
+          return res.status(409).json({ error: "PINs can only be regenerated after an exam expires or closes." });
+        }
       }
     }
 
-    const usedPins = new Set();
+    const usedPins = new Set(existingPins.filter((pin) => completedStudentIds.has(pin.student_id)).map(({ password }) => password));
     const pinRows = [];
     const batchCounts = [];
     for (const className of classes) {
@@ -183,6 +193,7 @@ router.post("/exams/:examId/pins", authorize("admin", "teacher"), async (req, re
       for (let batchNumber = 1; batchNumber <= batchCount; batchNumber += 1) {
         const currentBatchSize = baseBatchSize + (batchNumber <= largerBatchCount ? 1 : 0);
         for (const student of students.slice(studentIndex, studentIndex + currentBatchSize)) {
+          if (completedStudentIds.has(student.id)) continue;
           let password;
           do {
             password = String(randomInt(0, 1_000_000)).padStart(6, "0");
@@ -202,18 +213,28 @@ router.post("/exams/:examId/pins", authorize("admin", "teacher"), async (req, re
             generated_date: new Date().toISOString(),
           });
         }
-        batchCounts.push({ class: className, batch_number: batchNumber, student_count: currentBatchSize });
+        const generatedCount = pinRows.filter((pin) => pin.class === className && pin.batch_number === batchNumber).length;
+        batchCounts.push({ class: className, batch_number: batchNumber, student_count: generatedCount });
         studentIndex += currentBatchSize;
       }
     }
-    const activeBatches = Object.fromEntries(classes.map((className) => [className, 1]));
+    const incompleteStudentIds = pinRows.map(({ student_id }) => student_id);
+    const activeBatches = Object.fromEntries(classes.map((className) => {
+      const nextBatch = pinRows.find((pin) => pin.class === className)?.batch_number || 1;
+      return [className, nextBatch];
+    }));
 
-    await prisma.$transaction([
-      prisma.cBTExamPassword.deleteMany({ where: { exam_id: exam.id } }),
-      prisma.cBTExamPassword.createMany({ data: pinRows }),
+    const transaction = [
+      ...(incompleteStudentIds.length > 0 ? [prisma.cBTExamPassword.deleteMany({ where: { exam_id: exam.id, student_id: { in: incompleteStudentIds } } })] : []),
+      ...(pinRows.length > 0 ? [prisma.cBTExamPassword.createMany({ data: pinRows })] : []),
       prisma.cBTExam.update({ where: { id: exam.id }, data: { active_batches: activeBatches } }),
-    ]);
-    return res.status(201).json({ pins: pinRows, batches: batchCounts });
+    ];
+    await prisma.$transaction(transaction);
+    const pinRoster = await prisma.cBTExamPassword.findMany({
+      where: { exam_id: exam.id },
+      orderBy: [{ class: "asc" }, { batch_number: "asc" }, { student_name: "asc" }],
+    });
+    return res.status(201).json({ pins: pinRoster, batches: batchCounts, active_batches: activeBatches });
   } catch (error) {
     console.error("[POST /cbt/exams/:examId/pins]", error);
     return res.status(500).json({ error: "Unable to generate exam PINs." });
@@ -229,7 +250,12 @@ router.post("/exams/:examId/publish", authorize("admin", "teacher"), async (req,
     if (!roles.some((role) => ["admin", "director"].includes(role)) && exam.created_by !== req.user?.email) {
       return res.status(403).json({ error: "You can only publish your own exam." });
     }
-    if (exam.status !== "Draft") return res.status(409).json({ error: "This exam is no longer a draft." });
+    const previousEndTime = exam.end_date ? new Date(exam.end_date) : null;
+    const isExpiredPublishedExam = exam.status === "Published" && previousEndTime && previousEndTime < new Date();
+    const isReopen = exam.status === "Closed" || isExpiredPublishedExam;
+    if (exam.status !== "Draft" && !isReopen) {
+      return res.status(409).json({ error: "Only draft, closed, or expired exams can be published." });
+    }
     if (!Array.isArray(exam.questions) || exam.questions.length === 0 || Number(exam.duration_minutes) <= 0) {
       return res.status(400).json({ error: "Add questions and set a valid exam duration before publishing." });
     }
@@ -251,6 +277,7 @@ router.post("/exams/:examId/publish", authorize("admin", "teacher"), async (req,
     const classes = examClasses(exam);
     if (classes.length === 0) return res.status(400).json({ error: "Select at least one class before publishing." });
     const activeBatches = {};
+    const pinResets = [];
     for (const className of classes) {
       const { batchCount, studentsPerBatch } = batchSettingsForClass(exam, className);
       if (batchCount < 1 || studentsPerBatch < 1) {
@@ -264,25 +291,42 @@ router.post("/exams/:examId/publish", authorize("admin", "teacher"), async (req,
         where: { exam_id: exam.id, class: className },
         select: { student_id: true, batch_number: true, password: true, used: true },
       });
-      const studentIds = new Set(students.map(({ id }) => id));
-      const pinStudentIds = new Set(pins.map(({ student_id }) => student_id));
+      const completedResults = await prisma.cBTResult.findMany({
+        where: { exam_id: exam.id, class: className },
+        select: { student_id: true },
+      });
+      const completedStudentIds = new Set(completedResults.map(({ student_id }) => student_id));
+      const incompleteStudents = students.filter(({ id }) => !completedStudentIds.has(id));
+      const incompletePins = pins.filter(({ student_id }) => !completedStudentIds.has(student_id));
+      const pinStudentIds = new Set(incompletePins.map(({ student_id }) => student_id));
       const pinCodes = new Set(pins.map(({ password }) => password));
       const pinsByBatch = new Map();
-      pins.forEach((pin) => pinsByBatch.set(pin.batch_number, (pinsByBatch.get(pin.batch_number) || 0) + 1));
-      const batchesValid = Array.from({ length: batchCount }, (_, index) => index + 1)
-        .every((batchNumber) => pinsByBatch.has(batchNumber) && pinsByBatch.get(batchNumber) <= studentsPerBatch);
+      incompletePins.forEach((pin) => pinsByBatch.set(pin.batch_number, (pinsByBatch.get(pin.batch_number) || 0) + 1));
+      const batchesValid = incompletePins.every((pin) =>
+        Number.isInteger(pin.batch_number) && pin.batch_number >= 1 && pin.batch_number <= batchCount
+      ) && [...pinsByBatch.values()].every((count) => count <= studentsPerBatch);
       if (
-        students.length === 0 || pins.length !== students.length || pins.some(({ used }) => used) || pinCodes.size !== pins.length ||
-        pinStudentIds.size !== students.length || students.some(({ id }) => !pinStudentIds.has(id)) || !batchesValid
+        (students.length === 0 && !isReopen) || incompletePins.length !== incompleteStudents.length ||
+        incompletePins.some(({ used }) => used) || pinCodes.size !== pins.length ||
+        pinStudentIds.size !== incompleteStudents.length || incompleteStudents.some(({ id }) => !pinStudentIds.has(id)) || !batchesValid
       ) {
         return res.status(400).json({ error: `Generate unique PINs for every active student in ${className} before publishing.` });
       }
-      activeBatches[className] = 1;
+      activeBatches[className] = incompletePins.length > 0
+        ? Math.min(...incompletePins.map(({ batch_number }) => batch_number))
+        : 1;
+      pinResets.push(...incompletePins.map((pin) => prisma.cBTExamPassword.updateMany({
+        where: { exam_id: exam.id, student_id: pin.student_id, used: false },
+        data: { started_at: null },
+      })));
     }
-    const publishedExam = await prisma.cBTExam.update({
-      where: { id: exam.id },
-      data: { status: "Published", active_batches: activeBatches },
-    });
+    const publishedExam = await prisma.$transaction([
+      ...pinResets,
+      prisma.cBTExam.update({
+        where: { id: exam.id },
+        data: { status: "Published", active_batches: activeBatches },
+      }),
+    ]).then((records) => records[records.length - 1]);
     return res.json(publishedExam);
   } catch (error) {
     console.error("[POST /cbt/exams/:examId/publish]", error);
