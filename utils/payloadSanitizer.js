@@ -492,6 +492,7 @@ export const SCHEMA_FIELD_MAP = {
     head_teacher_name: { type: "String", isOptional: true },
     motto: { type: "String", isOptional: true },
     about: { type: "String", isOptional: true },
+    admission_requirements: { type: "Json", isOptional: true },
     director_email: { type: "String", isOptional: true },
     director_password: { type: "String", isOptional: true },
   },

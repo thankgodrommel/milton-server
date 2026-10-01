@@ -1049,6 +1049,7 @@ model SchoolSettings {
   head_teacher_name String?
   motto             String?
   about             String? @db.Text
+  admission_requirements Json?
   director_email    String?
   director_password String?
   created_date      DateTime @default(now()) @map("created_date")
