@@ -117,6 +117,22 @@ function isStaffUser(req) {
     .some((role) => ["admin", "teacher", "head_teacher", "principal", "director"].includes(String(role || "").toLowerCase()));
 }
 
+function isStudentUser(req) {
+  return [req.user?.role, ...(Array.isArray(req.user?.roles) ? req.user.roles : [])]
+    .some((role) => String(role || "").toLowerCase() === "student");
+}
+
+function isFeePaymentModel(model) {
+  return model === "SchoolFeePayment" || model === "FeePayment";
+}
+
+async function getStudentFeePaymentScope(req) {
+  const studentId = req.user?.profile_id || req.user?.id;
+  if (!studentId) return null;
+
+  return prisma.student.findUnique({ where: { id: studentId } });
+}
+
 async function validateAssignmentSubmissionAccess(req, assignment, existingSubmission = null) {
   if (isStaffUser(req)) return null;
   const studentId = req.user?.profile_id || req.user?.id;
@@ -198,6 +214,22 @@ router.get(
     try {
       const rawWhere = buildWhere(req.query);
       const where = toPrismaEnums(rawWhere);
+      if (isStudentUser(req) && isFeePaymentModel(model)) {
+        const student = await getStudentFeePaymentScope(req);
+        if (!student) return res.status(403).json({ error: "Student profile not found." });
+
+        const studentPaymentLinks = [{ student_id: student.id }];
+        if (student.admission_number) {
+          studentPaymentLinks.push(
+            { admission_number: student.admission_number },
+            { student_id: student.admission_number },
+          );
+        }
+
+        delete where.admission_number;
+        delete where.student_id;
+        where.OR = studentPaymentLinks;
+      }
       const orderBy = parseSort(req.query._sort);
       const take = req.query._limit ? parseInt(req.query._limit) : undefined;
 
@@ -233,6 +265,15 @@ router.get(
     try {
       const record = await db.findUnique({ where: { id: req.params.id } });
       if (!record) return res.status(404).json({ error: "Record not found." });
+      if (isStudentUser(req) && isFeePaymentModel(model)) {
+        const student = await getStudentFeePaymentScope(req);
+        if (!student) return res.status(403).json({ error: "Student profile not found." });
+        const ownsPayment = record.student_id === student.id ||
+          (student.admission_number &&
+            (record.admission_number === student.admission_number ||
+              record.student_id === student.admission_number));
+        if (!ownsPayment) return res.status(404).json({ error: "Record not found." });
+      }
       const visibleRecord = sanitizeExamForStudent(toUIEnums(record), req, model);
       if (!visibleRecord) return res.status(404).json({ error: "Record not found." });
       return res.json(visibleRecord);
