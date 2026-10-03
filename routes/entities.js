@@ -141,6 +141,45 @@ async function getStudentFeePaymentScope(req) {
   return prisma.student.findUnique({ where: { id: studentId } });
 }
 
+async function getStudentFeePaymentLinks(student) {
+  const links = [{ student_id: student.id }];
+  if (student.admission_number) {
+    links.push(
+      { admission_number: student.admission_number },
+      { student_id: student.admission_number },
+    );
+  }
+
+  const nameMatches = await prisma.student.findMany({
+    where: {
+      first_name: { equals: student.first_name, mode: "insensitive" },
+      last_name: { equals: student.last_name, mode: "insensitive" },
+    },
+    select: { id: true },
+  });
+  if (nameMatches.length === 1 && nameMatches[0].id === student.id) {
+    const nameVariants = [
+      [student.first_name, student.middle_name, student.last_name]
+        .filter(Boolean)
+        .join(" "),
+      `${student.first_name} ${student.middle_name || ""} ${student.last_name}`.trim(),
+      `${student.first_name} ${student.last_name}`,
+    ].filter(Boolean);
+
+    if (nameVariants.length) {
+      links.push({
+        student_name: { in: [...new Set(nameVariants)], mode: "insensitive" },
+        AND: [
+          { OR: [{ student_id: null }, { student_id: "" }] },
+          { OR: [{ admission_number: null }, { admission_number: "" }] },
+        ],
+      });
+    }
+  }
+
+  return links;
+}
+
 async function validateAssignmentSubmissionAccess(req, assignment, existingSubmission = null) {
   if (isStaffUser(req)) return null;
   const studentId = req.user?.profile_id || req.user?.id;
@@ -226,17 +265,9 @@ router.get(
         const student = await getStudentFeePaymentScope(req);
         if (!student) return res.status(403).json({ error: "Student profile not found." });
 
-        const studentPaymentLinks = [{ student_id: student.id }];
-        if (student.admission_number) {
-          studentPaymentLinks.push(
-            { admission_number: student.admission_number },
-            { student_id: student.admission_number },
-          );
-        }
-
         delete where.admission_number;
         delete where.student_id;
-        where.OR = studentPaymentLinks;
+        where.OR = await getStudentFeePaymentLinks(student);
       }
       const orderBy = parseSort(req.query._sort);
       const take = req.query._limit ? parseInt(req.query._limit) : undefined;
