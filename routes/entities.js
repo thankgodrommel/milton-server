@@ -127,6 +127,14 @@ function isFeePaymentModel(model) {
 }
 
 async function getStudentFeePaymentScope(req) {
+  const admissionNumber = req.user?.admission_number || req.user?.username;
+  if (admissionNumber) {
+    const student = await prisma.student.findUnique({
+      where: { admission_number: admissionNumber },
+    });
+    if (student) return student;
+  }
+
   const studentId = req.user?.profile_id || req.user?.id;
   if (!studentId) return null;
 
