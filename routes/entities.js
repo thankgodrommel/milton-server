@@ -170,8 +170,20 @@ async function getStudentFeePaymentLinks(student) {
       links.push({
         student_name: { in: [...new Set(nameVariants)], mode: "insensitive" },
         AND: [
-          { OR: [{ student_id: null }, { student_id: "" }] },
-          { OR: [{ admission_number: null }, { admission_number: "" }] },
+          {
+            OR: [
+              { student_id: null },
+              { student_id: "" },
+              { student_id: { equals: "N/A", mode: "insensitive" } },
+            ],
+          },
+          {
+            OR: [
+              { admission_number: null },
+              { admission_number: "" },
+              { admission_number: { equals: "N/A", mode: "insensitive" } },
+            ],
+          },
         ],
       });
     }
