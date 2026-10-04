@@ -193,6 +193,66 @@ router.post("/login", async (req, res) => {
     const loginKey = identifier.trim();
     const emailKey = loginKey.toLowerCase();
 
+    const student = await prisma.student.findUnique({
+      where: { admission_number: loginKey },
+    });
+    if (student) {
+      let valid = false;
+      if (student.custom_password) {
+        const isBcrypt = student.custom_password.startsWith("$2");
+        if (isBcrypt) {
+          valid = await bcrypt.compare(password, student.custom_password);
+        } else {
+          valid = password === student.custom_password;
+        }
+      } else {
+        valid = password === "User123";
+      }
+
+      if (!valid) {
+        return res
+          .status(401)
+          .json({ error: "Invalid admission number or password." });
+      }
+
+      await syncGenericUser({
+        email: student.parent_email || "",
+        username: student.admission_number,
+        password: student.custom_password || "User123",
+        role: "student",
+        first_name: student.first_name,
+        last_name: student.last_name,
+        profile_type: "Student",
+        profile_id: student.id,
+      });
+
+      const token = generateToken({
+        id: student.id,
+        email: student.parent_email || "",
+        role: "student",
+        username: student.admission_number,
+        admission_number: student.admission_number,
+        name: `${student.first_name} ${student.last_name}`,
+        profile_type: "Student",
+        profile_id: student.id,
+      });
+
+      return res.json({
+        token,
+        user: {
+          id: student.id,
+          email: student.parent_email || "",
+          username: student.admission_number,
+          admission_number: student.admission_number,
+          role: "student",
+          first_name: student.first_name,
+          last_name: student.last_name,
+          profile_type: "Student",
+          profile_id: student.id,
+        },
+      });
+    }
+
     const genericUser = await prisma.user.findFirst({
       where: {
         OR: [{ email: emailKey }, { username: loginKey }],
@@ -373,61 +433,6 @@ router.post("/login", async (req, res) => {
             last_name: teacher.last_name,
             profile_type: "Teacher",
             profile_id: teacher.id,
-          },
-        });
-      }
-    }
-
-    const student = await prisma.student.findUnique({
-      where: { admission_number: loginKey },
-    });
-    if (student) {
-      let valid = false;
-      if (student.custom_password) {
-        const isBcrypt = student.custom_password.startsWith("$2");
-        if (isBcrypt) {
-          valid = await bcrypt.compare(password, student.custom_password);
-        } else {
-          valid = password === student.custom_password;
-        }
-      } else {
-        valid = password === "User123";
-      }
-
-      if (valid) {
-        await syncGenericUser({
-          email: student.parent_email || "",
-          username: student.admission_number,
-          password: student.custom_password || "User123",
-          role: "student",
-          first_name: student.first_name,
-          last_name: student.last_name,
-          profile_type: "Student",
-          profile_id: student.id,
-        });
-
-        const token = generateToken({
-          id: student.id,
-          email: student.parent_email || "",
-          role: "student",
-          username: student.admission_number,
-          admission_number: student.admission_number,
-          name: `${student.first_name} ${student.last_name}`,
-          profile_type: "Student",
-          profile_id: student.id,
-        });
-
-        return res.json({
-          token,
-          user: {
-            id: student.id,
-            email: student.parent_email || "",
-            username: student.admission_number,
-            role: "student",
-            first_name: student.first_name,
-            last_name: student.last_name,
-            profile_type: "Student",
-            profile_id: student.id,
           },
         });
       }
