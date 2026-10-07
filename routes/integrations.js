@@ -89,27 +89,35 @@ router.get("/lesson-notes/:id/attachment", authenticate, async (req, res) => {
   try {
     const roles = [req.user?.role, ...(Array.isArray(req.user?.roles) ? req.user.roles : [])]
       .map((role) => String(role || "").toLowerCase());
-    if (!roles.includes("student")) {
-      return res.status(403).json({ error: "Student access is required." });
+    const isStudent = roles.includes("student");
+    const isTeacher = roles.some((role) =>
+      ["teacher", "head_teacher", "principal", "admin", "director"].includes(role)
+    );
+    if (!isStudent && !isTeacher) {
+      return res.status(403).json({ error: "Student or teacher access is required." });
     }
 
-    const student = await prisma.student.findFirst({
-      where: {
-        OR: [
-          { id: req.user.profile_id || req.user.id },
-          { admission_number: req.user.admission_number || req.user.username },
-        ],
-      },
-    });
-    if (!student) return res.status(403).json({ error: "Student profile not found." });
-
     const note = await prisma.lessonNote.findUnique({ where: { id: req.params.id } });
-    if (!note || note.status !== "Published" ||
-        note.class.trim().toLowerCase() !== student.current_class.trim().toLowerCase()) {
+    if (!note || note.status !== "Published") {
       return res.status(404).json({ error: "Lesson note attachment not found." });
     }
     if (!note.attachment_url) {
       return res.status(404).json({ error: "This lesson note has no attachment." });
+    }
+
+    if (isStudent) {
+      const student = await prisma.student.findFirst({
+        where: {
+          OR: [
+            { id: req.user.profile_id || req.user.id },
+            { admission_number: req.user.admission_number || req.user.username },
+          ],
+        },
+      });
+      if (!student) return res.status(403).json({ error: "Student profile not found." });
+      if (note.class.trim().toLowerCase() !== student.current_class.trim().toLowerCase()) {
+        return res.status(404).json({ error: "Lesson note attachment not found." });
+      }
     }
 
     const asset = getCloudinaryAssetDetails(note.attachment_url);
