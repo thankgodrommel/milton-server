@@ -3,7 +3,8 @@ import path from "path";
 import fs from "fs";
 import { fileURLToPath } from "url";
 import { upload, MAX_FILE_SIZE_MB, MAX_FILE_SIZE_BYTES } from "../middleware/upload.js";
-import { authenticateOptional } from "../middleware/auth.js";
+import { authenticate, authenticateOptional } from "../middleware/auth.js";
+import prisma from "../config/prisma.js";
 import { getCloudinary, uploadBufferToCloudinary } from "../services/cloudinary.js";
 import { sendEmail } from "../services/email.js";
 
@@ -40,6 +41,100 @@ function getBaseUrl(req) {
   const protocol = req.protocol === "https" || req.get("x-forwarded-proto") === "https" ? "https" : "http";
   return `${protocol}://${host}`;
 }
+
+function getCloudinaryAssetDetails(fileUrl) {
+  let url;
+  try {
+    url = new URL(fileUrl);
+  } catch {
+    return null;
+  }
+
+  if (url.hostname !== "res.cloudinary.com") return null;
+
+  const segments = url.pathname.split("/");
+  const resourceType = segments[2];
+  const deliveryType = segments[3];
+  if (!["image", "raw", "video"].includes(resourceType) ||
+      !["upload", "private", "authenticated"].includes(deliveryType)) {
+    throw new Error("Unsupported Cloudinary attachment URL.");
+  }
+
+  const versionIndex = segments.findIndex((segment, index) =>
+    index > 3 && /^v\d+$/.test(segment)
+  );
+  if (versionIndex < 0 || versionIndex === segments.length - 1) {
+    throw new Error("Could not parse the Cloudinary attachment URL.");
+  }
+
+  let publicId;
+  try {
+    publicId = decodeURIComponent(segments.slice(versionIndex + 1).join("/"));
+  } catch {
+    throw new Error("Could not parse the Cloudinary attachment URL.");
+  }
+  const version = Number(segments[versionIndex].slice(1));
+  let format;
+  if (resourceType === "image") {
+    const extensionIndex = publicId.lastIndexOf(".");
+    if (extensionIndex > publicId.lastIndexOf("/")) {
+      format = publicId.slice(extensionIndex + 1);
+      publicId = publicId.slice(0, extensionIndex);
+    }
+  }
+
+  return { publicId, resourceType, deliveryType, version, format };
+}
+
+router.get("/lesson-notes/:id/attachment", authenticate, async (req, res) => {
+  try {
+    const roles = [req.user?.role, ...(Array.isArray(req.user?.roles) ? req.user.roles : [])]
+      .map((role) => String(role || "").toLowerCase());
+    if (!roles.includes("student")) {
+      return res.status(403).json({ error: "Student access is required." });
+    }
+
+    const student = await prisma.student.findFirst({
+      where: {
+        OR: [
+          { id: req.user.profile_id || req.user.id },
+          { admission_number: req.user.admission_number || req.user.username },
+        ],
+      },
+    });
+    if (!student) return res.status(403).json({ error: "Student profile not found." });
+
+    const note = await prisma.lessonNote.findUnique({ where: { id: req.params.id } });
+    if (!note || note.status !== "Published" ||
+        note.class.trim().toLowerCase() !== student.current_class.trim().toLowerCase()) {
+      return res.status(404).json({ error: "Lesson note attachment not found." });
+    }
+    if (!note.attachment_url) {
+      return res.status(404).json({ error: "This lesson note has no attachment." });
+    }
+
+    const asset = getCloudinaryAssetDetails(note.attachment_url);
+    if (!asset) return res.json({ file_url: note.attachment_url });
+
+    const cloudinary = getCloudinary();
+    if (!cloudinary) {
+      return res.status(503).json({ error: "Attachment delivery is temporarily unavailable." });
+    }
+
+    const fileUrl = cloudinary.url(asset.publicId, {
+      resource_type: asset.resourceType,
+      type: asset.deliveryType,
+      version: asset.version,
+      format: asset.format,
+      sign_url: true,
+      secure: true,
+    });
+    return res.json({ file_url: fileUrl });
+  } catch (err) {
+    console.error("[LessonNote attachment]", err);
+    return res.status(500).json({ error: "Failed to prepare lesson note attachment." });
+  }
+});
 
 /**
  * POST /api/integrations/Core/UploadFile (and /api/upload)
