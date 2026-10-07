@@ -93,6 +93,8 @@ router.post(
         const result = await uploadBufferToCloudinary(buffer, {
           folder,
           resource_type: "auto",
+          type: "upload",
+          access_mode: "public",
         });
 
         console.log(`[Upload] Cloudinary upload successful: ${result.secure_url}`);
