@@ -114,6 +114,9 @@ router.get("/lesson-notes/:id/attachment", authenticate, async (req, res) => {
 
     const asset = getCloudinaryAssetDetails(note.attachment_url);
     if (!asset) return res.json({ file_url: note.attachment_url });
+    if (asset.deliveryType === "upload") {
+      return res.json({ file_url: note.attachment_url });
+    }
 
     const cloudinary = getCloudinary();
     if (!cloudinary) {
