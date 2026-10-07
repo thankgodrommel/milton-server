@@ -73,7 +73,6 @@ function getCloudinaryAssetDetails(fileUrl) {
   } catch {
     throw new Error("Could not parse the Cloudinary attachment URL.");
   }
-  const version = Number(segments[versionIndex].slice(1));
   let format;
   if (resourceType === "image") {
     const extensionIndex = publicId.lastIndexOf(".");
@@ -83,7 +82,7 @@ function getCloudinaryAssetDetails(fileUrl) {
     }
   }
 
-  return { publicId, resourceType, deliveryType, version, format };
+  return { publicId, resourceType, deliveryType, format };
 }
 
 router.get("/lesson-notes/:id/attachment", authenticate, async (req, res) => {
@@ -121,13 +120,10 @@ router.get("/lesson-notes/:id/attachment", authenticate, async (req, res) => {
       return res.status(503).json({ error: "Attachment delivery is temporarily unavailable." });
     }
 
-    const fileUrl = cloudinary.url(asset.publicId, {
+    const fileUrl = cloudinary.utils.private_download_url(asset.publicId, asset.format || "", {
       resource_type: asset.resourceType,
       type: asset.deliveryType,
-      version: asset.version,
-      format: asset.format,
-      sign_url: true,
-      secure: true,
+      expires_at: Math.floor(Date.now() / 1000) + 5 * 60,
     });
     return res.json({ file_url: fileUrl });
   } catch (err) {
