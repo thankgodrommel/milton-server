@@ -549,6 +549,15 @@ function missingFeePaymentLinkConditions(field) {
   ];
 }
 
+function feePaymentAdmissionNumberCondition(field, admissionNumber) {
+  return {
+    [field]: {
+      equals: admissionNumber.trim(),
+      mode: "insensitive",
+    },
+  };
+}
+
 async function getStudentFeePaymentScope(req) {
   const admissionNumber = req.user?.admission_number || req.user?.username;
   if (admissionNumber) {
@@ -566,10 +575,11 @@ async function getStudentFeePaymentScope(req) {
 
 async function getStudentFeePaymentLinks(student) {
   const links = [{ student_id: student.id }];
-  if (student.admission_number) {
+  const admissionNumber = student.admission_number?.trim();
+  if (admissionNumber) {
     links.push(
-      { admission_number: student.admission_number },
-      { student_id: student.admission_number },
+      feePaymentAdmissionNumberCondition("admission_number", admissionNumber),
+      feePaymentAdmissionNumberCondition("student_id", admissionNumber),
     );
   }
 
@@ -763,6 +773,16 @@ router.get(
     try {
       const rawWhere = buildWhere(req.query);
       const where = toPrismaEnums(rawWhere);
+      if (
+        isFeePaymentModel(model) &&
+        typeof where.admission_number === "string" &&
+        where.admission_number.trim()
+      ) {
+        where.admission_number = feePaymentAdmissionNumberCondition(
+          "admission_number",
+          where.admission_number,
+        ).admission_number;
+      }
       if (model === "ChatMessage" && isParentChatUser(req)) {
         const scope = await getParentChatScope(req);
         const allowedIds = scope.conversations.map((item) => item.conversation_id);
@@ -870,10 +890,11 @@ router.get(
       if (isStudentUser(req) && isFeePaymentModel(model)) {
         const student = await getStudentFeePaymentScope(req);
         if (!student) return res.status(403).json({ error: "Student profile not found." });
+        const admissionNumber = student.admission_number?.trim().toLowerCase();
         const ownsPayment = record.student_id === student.id ||
-          (student.admission_number &&
-            (record.admission_number === student.admission_number ||
-              record.student_id === student.admission_number));
+          (admissionNumber &&
+            [record.admission_number, record.student_id]
+              .some((value) => value?.trim().toLowerCase() === admissionNumber));
         if (!ownsPayment) return res.status(404).json({ error: "Record not found." });
       }
       const visibleRecord = sanitizeExamForStudent(
