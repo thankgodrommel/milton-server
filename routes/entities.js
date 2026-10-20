@@ -539,6 +539,16 @@ function isFeePaymentModel(model) {
   return model === "SchoolFeePayment" || model === "FeePayment";
 }
 
+function missingFeePaymentLinkConditions(field) {
+  return [
+    { [field]: null },
+    { [field]: "" },
+    ...["N/A", "null", "undefined"].map((value) => ({
+      [field]: { equals: value, mode: "insensitive" },
+    })),
+  ];
+}
+
 async function getStudentFeePaymentScope(req) {
   const admissionNumber = req.user?.admission_number || req.user?.username;
   if (admissionNumber) {
@@ -583,20 +593,8 @@ async function getStudentFeePaymentLinks(student) {
       links.push({
         student_name: { in: [...new Set(nameVariants)], mode: "insensitive" },
         AND: [
-          {
-            OR: [
-              { student_id: null },
-              { student_id: "" },
-              { student_id: { equals: "N/A", mode: "insensitive" } },
-            ],
-          },
-          {
-            OR: [
-              { admission_number: null },
-              { admission_number: "" },
-              { admission_number: { equals: "N/A", mode: "insensitive" } },
-            ],
-          },
+          { OR: missingFeePaymentLinkConditions("student_id") },
+          { OR: missingFeePaymentLinkConditions("admission_number") },
         ],
       });
     }
