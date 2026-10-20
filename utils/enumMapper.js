@@ -41,6 +41,9 @@ const ENUM_MAPPINGS = {
   // Payment Method
   'Bank Transfer': 'Bank_Transfer',
 
+  // Expense Status
+  'Pending Approval': 'Pending_Approval',
+
   // Staff Role Type
   'Non-Academic Staff': 'Non_Academic_Staff',
 };
