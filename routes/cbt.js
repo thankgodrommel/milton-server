@@ -32,8 +32,32 @@ function examClasses(exam) {
   return [...new Set(classes.filter((className) => typeof className === "string" && className.trim()))];
 }
 
-function activeBatchForClass(exam, className) {
-  return Number(exam.active_batches?.[className]) || 1;
+function batchScheduleForClass(exam, className, now = new Date()) {
+  const settings = exam.batch_settings?.[className] || {};
+  const batches = Array.isArray(settings.batches) ? settings.batches : [];
+  const { batchCount } = batchSettingsForClass(exam, className);
+  if (!batches.length) {
+    return { batchNumber: Number(exam.active_batches?.[className]) || 1, batchCount };
+  }
+  const normalized = Array.from({ length: batchCount }, (_, index) => {
+    const entry = batches[index] || {};
+    const start = entry.start_time ? new Date(entry.start_time) : null;
+    const end = entry.end_time ? new Date(entry.end_time) : null;
+    return {
+      batchNumber: index + 1,
+      start,
+      end,
+    };
+  });
+  const active = normalized.find(({ start, end }) => start && end && Number.isFinite(start.getTime()) && Number.isFinite(end.getTime()) && start <= now && now <= end);
+  return {
+    batchNumber: active ? active.batchNumber : Number(exam.active_batches?.[className]) || 1,
+    batchCount,
+  };
+}
+
+function activeBatchForClass(exam, className, now = new Date()) {
+  return batchScheduleForClass(exam, className, now).batchNumber;
 }
 
 function batchSettingsForClass(exam, className) {
@@ -76,11 +100,12 @@ async function getPinAccess(user, pin, now = new Date(), allowStartedAttempt = f
   if (!examClasses(exam).includes(student.current_class) || pinRecord.class !== student.current_class) {
     return { error: "This exam is not assigned to your class.", status: 403 };
   }
+  const currentBatch = activeBatchForClass(exam, student.current_class, now);
   if (
-    Number(pinRecord.batch_number || 1) !== activeBatchForClass(exam, student.current_class) &&
+    Number(pinRecord.batch_number || 1) !== currentBatch &&
     !(allowStartedAttempt && pinRecord.started_at)
   ) {
-    return { error: `This PIN belongs to batch ${pinRecord.batch_number || 1}. Batch ${activeBatchForClass(exam, student.current_class)} is currently taking the exam.`, status: 403 };
+    return { error: `This PIN belongs to batch ${pinRecord.batch_number || 1}. Batch ${currentBatch} is currently taking the exam.`, status: 403 };
   }
   const existingResult = await prisma.cBTResult.findFirst({
     where: { exam_id: exam.id, student_id: student.id },
@@ -110,8 +135,9 @@ router.get("/available", authorize("student"), async (req, res) => {
     const available = exams.filter((exam) => {
       if (!examClasses(exam).includes(student.current_class) || takenIds.has(exam.id)) return false;
       if (!examIsOpen(exam, now)) return false;
+      const activeBatch = activeBatchForClass(exam, student.current_class, now);
       const pin = pins.find((record) => record.exam_id === exam.id && record.class === student.current_class);
-      return pin && Number(pin.batch_number || 1) === activeBatchForClass(exam, student.current_class);
+      return pin && Number(pin.batch_number || 1) === activeBatch;
     });
     return res.json(available.map((exam) => {
       const safeExam = publicExam(exam);
@@ -121,7 +147,7 @@ router.get("/available", authorize("student"), async (req, res) => {
         ...safeExam,
         question_count: questions.length,
         has_theory: questions.some(({ type }) => type === "theory"),
-        active_batch_number: activeBatchForClass(exam, student.current_class),
+        active_batch_number: activeBatchForClass(exam, student.current_class, now),
       };
     }));
   } catch (error) {
