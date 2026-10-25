@@ -693,6 +693,8 @@ model Attendance {
   date             String?
   status           AttendanceStatus @default(Present)
   remarks          String?
+  holiday_type     String?
+  holiday_reason   String?
   marked_by        String?
   // Legacy field
   created_by       String?
@@ -1051,6 +1053,7 @@ model SchoolSettings {
   motto             String?
   about             String? @db.Text
   admission_requirements Json?
+  term_dates        Json?
   director_email    String?
   director_password String?
   created_date      DateTime @default(now()) @map("created_date")

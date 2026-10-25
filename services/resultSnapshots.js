@@ -1,5 +1,26 @@
 import { toPrismaEnums } from "../utils/enumMapper.js";
 
+function isValidDate(value) {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const date = new Date(`${value}T00:00:00.000Z`);
+  return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value;
+}
+
+function countSchoolDays(openingDate, vacatingDate, holidayDates) {
+  if (!isValidDate(openingDate) || !isValidDate(vacatingDate) || openingDate > vacatingDate) return null;
+
+  let total = 0;
+  const current = new Date(`${openingDate}T00:00:00.000Z`);
+  const last = new Date(`${vacatingDate}T00:00:00.000Z`);
+  while (current <= last) {
+    const date = current.toISOString().slice(0, 10);
+    const dayOfWeek = current.getUTCDay();
+    if (dayOfWeek !== 0 && dayOfWeek !== 6 && !holidayDates.has(date)) total++;
+    current.setUTCDate(current.getUTCDate() + 1);
+  }
+  return total;
+}
+
 function calculateGrade(score, section) {
   if (section === "Secondary") {
     if (score >= 75) return "A1";
@@ -367,14 +388,30 @@ export async function buildResultSnapshot(db, {
     }),
     db.schoolSettings.findFirst(),
   ]);
-  const present = attendanceRecords.filter((item) => item.status === "Present" || item.status === "Late").length;
+  const nonHolidayRecords = attendanceRecords.filter((item) => !item.holiday_type);
+  const holidayDates = new Set(
+    attendanceRecords
+      .filter((item) => item.holiday_type && isValidDate(item.date))
+      .map((item) => item.date)
+  );
+  const termLabel = String(term || "").replace(/_/g, " ");
+  const termDates = settings?.term_dates?.[termLabel] || settings?.term_dates?.[term];
+  const configuredSchoolDays = countSchoolDays(
+    termDates?.opening_date,
+    termDates?.vacating_date,
+    holidayDates
+  );
+  const total = configuredSchoolDays ?? new Set(
+    nonHolidayRecords.filter((item) => isValidDate(item.date)).map((item) => item.date)
+  ).size;
+  const present = nonHolidayRecords.filter((item) => item.status === "Present" || item.status === "Late").length;
   const attendanceSummary = {
     present,
-    absent: attendanceRecords.filter((item) => item.status === "Absent").length,
-    late: attendanceRecords.filter((item) => item.status === "Late").length,
-    excused: attendanceRecords.filter((item) => item.status === "Excused").length,
-    total: attendanceRecords.length,
-    attendanceRate: attendanceRecords.length ? Math.round((present / attendanceRecords.length) * 100) : null,
+    absent: nonHolidayRecords.filter((item) => item.status === "Absent").length,
+    late: nonHolidayRecords.filter((item) => item.status === "Late").length,
+    excused: nonHolidayRecords.filter((item) => item.status === "Excused").length,
+    total,
+    attendanceRate: total ? Math.round((present / total) * 100) : null,
   };
 
   return {
