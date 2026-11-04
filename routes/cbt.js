@@ -2,6 +2,7 @@ import { randomInt } from "node:crypto";
 import { Router } from "express";
 import prisma from "../config/prisma.js";
 import { authenticate, authorize } from "../middleware/auth.js";
+import { gradeTheoryAnswer } from "../services/theoryGrading.js";
 
 const router = Router();
 router.use(authenticate);
@@ -21,9 +22,13 @@ function publicExam(exam) {
   delete safeExam.exam_password;
   return {
     ...safeExam,
-    questions: (Array.isArray(exam.questions) ? exam.questions : []).map(
-      ({ correct_answer, ...question }) => question,
-    ),
+    questions: (Array.isArray(exam.questions) ? exam.questions : []).map((question) => {
+      const safeQuestion = { ...question };
+      delete safeQuestion.correct_answer;
+      delete safeQuestion.reference_answer;
+      delete safeQuestion.grading_strictness;
+      return safeQuestion;
+    }),
   };
 }
 
@@ -516,7 +521,9 @@ router.post("/submit", authorize("student"), async (req, res) => {
 
     const submittedAnswers = Array.isArray(req.body.answers) ? req.body.answers : [];
     let score = 0;
+    let theoryScore = 0;
     let correctCount = 0;
+    let needsManualTheoryGrading = false;
     const questions = Array.isArray(exam.questions) ? exam.questions : [];
     const answers = questions.map((question, index) => {
       const submitted = submittedAnswers[index] || {};
@@ -529,11 +536,35 @@ router.post("/submit", authorize("student"), async (req, res) => {
         }
         return { question_index: index, type: "objective", selected_answer: selected, is_correct: isCorrect };
       }
+      const theoryAnswer = String(submitted.theory_answer || "");
+      const referenceAnswer = String(question.reference_answer || "").trim();
+      if (!referenceAnswer) {
+        needsManualTheoryGrading = true;
+        return {
+          question_index: index,
+          type: "theory",
+          theory_answer: theoryAnswer,
+          is_correct: null,
+        };
+      }
+
+      const maxMarks = Number(question.marks) || 1;
+      const autoGrade = gradeTheoryAnswer(
+        referenceAnswer,
+        theoryAnswer,
+        question.grading_strictness,
+        maxMarks,
+      );
+      theoryScore += autoGrade.score;
+      score += autoGrade.score;
       return {
         question_index: index,
         type: "theory",
-        theory_answer: String(submitted.theory_answer || ""),
-        is_correct: null,
+        theory_answer: theoryAnswer,
+        theory_score: autoGrade.score,
+        auto_graded: true,
+        grading_similarity: autoGrade.similarity,
+        is_correct: autoGrade.score >= maxMarks,
       };
     });
     const hasTheory = questions.some((question) => question.type === "theory");
@@ -567,8 +598,9 @@ router.post("/submit", authorize("student"), async (req, res) => {
           time_taken_minutes: Math.ceil(elapsedSeconds / 60),
           time_taken_seconds: elapsedSeconds,
           submitted_at: now.toISOString(),
-          status: hasTheory ? "Pending" : "Graded",
-          theory_graded: !hasTheory,
+          theory_score: theoryScore,
+          status: needsManualTheoryGrading ? "Pending" : "Graded",
+          theory_graded: !needsManualTheoryGrading,
           auto_submitted: Boolean(req.body.auto_submitted),
         },
       });
