@@ -362,6 +362,17 @@ enum UserRole {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+enum StaffAttendanceStatus {
+  present
+  excused
+}
+
+enum StaffAttendanceRequestStatus {
+  pending
+  approved
+  declined
+}
+
 // ADMIN USER (platform login)
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -702,6 +713,46 @@ model Attendance {
   updated_date     DateTime         @updatedAt @map("updated_date")
 
   @@map("attendance")
+}
+
+model StaffAttendance {
+  id               String                @id @default(cuid())
+  staff_id         String
+  staff_type       String
+  staff_name       String
+  staff_identifier String?
+  date             String
+  status           StaffAttendanceStatus @default(present)
+  time_in          DateTime?             @db.Timestamptz(3)
+  time_out         DateTime?             @db.Timestamptz(3)
+  marked_by        String?
+  created_date     DateTime              @default(now()) @map("created_date") @db.Timestamptz(3)
+  updated_date     DateTime              @updatedAt @map("updated_date") @db.Timestamptz(3)
+
+  @@unique([staff_type, staff_id, date])
+  @@index([date])
+  @@index([staff_id, staff_type, date])
+  @@map("staff_attendance")
+}
+
+model StaffAttendanceRequest {
+  id               String                       @id @default(cuid())
+  staff_id         String
+  staff_type       String
+  staff_name       String
+  staff_identifier String?
+  start_date       String
+  end_date         String
+  reason           String                       @db.Text
+  status           StaffAttendanceRequestStatus @default(pending)
+  reviewed_by      String?
+  reviewed_at      DateTime?                    @db.Timestamptz(3)
+  created_date     DateTime                     @default(now()) @map("created_date") @db.Timestamptz(3)
+  updated_date     DateTime                     @updatedAt @map("updated_date") @db.Timestamptz(3)
+
+  @@index([staff_id, staff_type, created_date])
+  @@index([status, created_date])
+  @@map("staff_attendance_requests")
 }
 
 model Holiday {
