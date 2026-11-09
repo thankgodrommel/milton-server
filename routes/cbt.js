@@ -544,6 +544,7 @@ router.post("/submit", authorize("student"), async (req, res) => {
           question_index: index,
           type: "theory",
           theory_answer: theoryAnswer,
+          max_marks: Number(question.marks) || 1,
           is_correct: null,
         };
       }
@@ -562,6 +563,7 @@ router.post("/submit", authorize("student"), async (req, res) => {
         type: "theory",
         theory_answer: theoryAnswer,
         theory_score: autoGrade.score,
+        max_marks: maxMarks,
         auto_graded: true,
         grading_similarity: autoGrade.similarity,
         is_correct: autoGrade.score >= maxMarks,
