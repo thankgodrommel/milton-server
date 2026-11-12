@@ -1,7 +1,7 @@
 import prisma from "../config/prisma.js";
 
 const isDeactivated = (status) =>
-  ["inactive", "terminated"].includes(String(status || "").toLowerCase());
+  ["inactive", "terminated"].includes(String(status || "").trim().toLowerCase());
 
 const emailCondition = (email) =>
   email ? { email: { equals: email, mode: "insensitive" } } : null;
@@ -10,6 +10,7 @@ export async function hasActiveStaffAccess(user) {
   const profileType = String(user.profile_type || "").toLowerCase();
   const roles = [user.role, ...(Array.isArray(user.roles) ? user.roles : [])]
     .map((role) => String(role || "").toLowerCase());
+  if (profileType === "adminuser" || profileType === "admin") return true;
   const isTeacher = profileType === "teacher" ||
     roles.some((role) => ["teacher", "head_teacher", "principal"].includes(role)) ||
     Boolean(user.teacher_type || user.staff_id);
@@ -53,7 +54,8 @@ export async function hasActiveStaffAccess(user) {
       where: { OR: staffRoleConditions },
       select: { status: true },
     });
-    if (staffRoles.length && !staffRoles.some(({ status }) => status === "Active")) {
+    if (staffRoles.length && !staffRoles.some(({ status }) =>
+      String(status || "").toLowerCase() === "active")) {
       return false;
     }
   }

@@ -7,6 +7,8 @@ import { sendEmail } from "../services/email.js";
 import { hasActiveStaffAccess } from "../utils/staffAccess.js";
 
 const router = Router();
+const DEACTIVATED_STAFF_MESSAGE =
+  "This staff account is deactivated. Please contact the admin to reactivate it.";
 
 async function normalizePassword(password) {
   if (!password) return null;
@@ -278,7 +280,7 @@ router.post("/login", async (req, res) => {
           role: highestRole,
           roles,
         }))) {
-          return res.status(403).json({ error: "This staff account is deactivated. Contact an administrator." });
+          return res.status(403).json({ error: DEACTIVATED_STAFF_MESSAGE });
         }
 
         let resolvedStaffId = null;
@@ -389,8 +391,14 @@ router.post("/login", async (req, res) => {
       },
     });
     if (teacher) {
-      if (teacher.status === "Inactive") {
-        return res.status(403).json({ error: "This staff account is deactivated. Contact an administrator." });
+      if (!(await hasActiveStaffAccess({
+        profile_type: "Teacher",
+        profile_id: teacher.id,
+        staff_id: teacher.staff_id,
+        email: teacher.email,
+        role: "teacher",
+      }))) {
+        return res.status(403).json({ error: DEACTIVATED_STAFF_MESSAGE });
       }
       let valid = false;
       if (teacher.custom_password) {
@@ -509,6 +517,16 @@ router.post("/login", async (req, res) => {
       where: { staff_id: loginKey },
     });
     if (staff) {
+      if (!(await hasActiveStaffAccess({
+        profile_type: "NonAcademicStaff",
+        profile_id: staff.id,
+        staff_id: staff.staff_id,
+        email: staff.email,
+        role: "accountant",
+      }))) {
+        return res.status(403).json({ error: DEACTIVATED_STAFF_MESSAGE });
+      }
+
       let valid = false;
       if (staff.custom_password) {
         const isBcrypt = staff.custom_password.startsWith("$2");
@@ -584,8 +602,14 @@ router.post("/teacher-login", async (req, res) => {
     if (!teacher) {
       return res.status(401).json({ error: "Invalid Staff ID or password." });
     }
-    if (teacher.status === "Inactive") {
-      return res.status(403).json({ error: "This staff account is deactivated. Contact an administrator." });
+    if (!(await hasActiveStaffAccess({
+      profile_type: "Teacher",
+      profile_id: teacher.id,
+      staff_id: teacher.staff_id,
+      email: teacher.email,
+      role: "teacher",
+    }))) {
+      return res.status(403).json({ error: DEACTIVATED_STAFF_MESSAGE });
     }
 
     // Support plain-text passwords, bcrypt hashes, and default passwords
@@ -611,15 +635,6 @@ router.post("/teacher-login", async (req, res) => {
       teacher.teacher_type
     );
 
-    if (!(await hasActiveStaffAccess({
-      profile_type: "NonAcademicStaff",
-      profile_id: staff.id,
-      staff_id: staff.staff_id,
-      email: staff.email,
-      role: "accountant",
-    }))) {
-      return res.status(403).json({ error: "This staff account is deactivated. Contact an administrator." });
-    }
     await syncGenericUser({
       email: teacher.email,
       username: teacher.staff_id,
@@ -829,25 +844,25 @@ router.post("/accountant-login", async (req, res) => {
         .json({ error: "Staff ID and password are required." });
     }
 
-    // Accountants use NonAcademicStaff or StaffRole
-    const staffRole = await prisma.staffRole.findFirst({
-      where: {
-        user_email: staff_id.trim(),
-        role: "Accountant",
-        status: "Active",
-      },
-    });
-
-    // Try NonAcademicStaff table
     const staff = await prisma.nonAcademicStaff.findUnique({
       where: { staff_id: staff_id.trim() },
     });
 
-    if (!staff && !staffRole) {
+    if (!staff) {
       return res.status(401).json({ error: "Invalid Staff ID or password." });
     }
 
     const record = staff;
+    if (!(await hasActiveStaffAccess({
+      profile_type: "NonAcademicStaff",
+      profile_id: record.id,
+      staff_id: record.staff_id,
+      email: record.email,
+      role: "accountant",
+    }))) {
+      return res.status(403).json({ error: DEACTIVATED_STAFF_MESSAGE });
+    }
+
     let valid = false;
     if (record?.custom_password) {
       const isBcrypt = record.custom_password.startsWith("$2");
@@ -881,6 +896,8 @@ router.post("/accountant-login", async (req, res) => {
       role: "accountant",
       staff_id: record.staff_id,
       name: `${record.first_name} ${record.last_name}`,
+      profile_type: "NonAcademicStaff",
+      profile_id: record.id,
     });
 
     return res.json({ token, staff: { ...record, role: "accountant" } });

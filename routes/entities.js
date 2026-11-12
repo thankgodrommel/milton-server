@@ -1411,6 +1411,17 @@ router.patch(
       }
 
       const prismaData = sanitizeAndCoerce(model, rawData);
+      const requestRoles = [
+        req.user?.role,
+        ...(Array.isArray(req.user?.roles) ? req.user.roles : []),
+      ].map((role) => String(role || "").toLowerCase());
+      if (
+        ["Teacher", "StaffRole", "NonAcademicStaff"].includes(model) &&
+        prismaData.status !== undefined &&
+        !requestRoles.includes("admin")
+      ) {
+        return res.status(403).json({ error: "Only an admin can change staff activation status." });
+      }
 
       if (model === "Teacher" && ["Active", "Inactive"].includes(prismaData.status)) {
         const existingTeacher = await prisma.teacher.findUnique({ where: { id } });
