@@ -64,7 +64,7 @@ export const ROLE_RULES = {
     filter: [],
     get: [],
     create: ["admin", "principal", "accountant"],
-    update: ["admin", "principal", "head_teacher", "teacher", "accountant", "student"],
+    update: ["admin", "principal", "accountant", "student"],
     delete: ["admin", "principal"],
   },
 

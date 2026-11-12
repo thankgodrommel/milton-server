@@ -4,6 +4,7 @@ import jwt from "jsonwebtoken";
 import prisma from "../config/prisma.js";
 import { generateToken, authenticate } from "../middleware/auth.js";
 import { sendEmail } from "../services/email.js";
+import { hasActiveStaffAccess } from "../utils/staffAccess.js";
 
 const router = Router();
 
@@ -272,6 +273,13 @@ router.post("/login", async (req, res) => {
           genericUser.username,
           genericUser.role
         );
+        if (!(await hasActiveStaffAccess({
+          ...genericUser,
+          role: highestRole,
+          roles,
+        }))) {
+          return res.status(403).json({ error: "This staff account is deactivated. Contact an administrator." });
+        }
 
         let resolvedStaffId = null;
         if (
@@ -381,6 +389,9 @@ router.post("/login", async (req, res) => {
       },
     });
     if (teacher) {
+      if (teacher.status === "Inactive") {
+        return res.status(403).json({ error: "This staff account is deactivated. Contact an administrator." });
+      }
       let valid = false;
       if (teacher.custom_password) {
         const isBcrypt = teacher.custom_password.startsWith("$2");
@@ -573,6 +584,9 @@ router.post("/teacher-login", async (req, res) => {
     if (!teacher) {
       return res.status(401).json({ error: "Invalid Staff ID or password." });
     }
+    if (teacher.status === "Inactive") {
+      return res.status(403).json({ error: "This staff account is deactivated. Contact an administrator." });
+    }
 
     // Support plain-text passwords, bcrypt hashes, and default passwords
     let valid = false;
@@ -597,6 +611,15 @@ router.post("/teacher-login", async (req, res) => {
       teacher.teacher_type
     );
 
+    if (!(await hasActiveStaffAccess({
+      profile_type: "NonAcademicStaff",
+      profile_id: staff.id,
+      staff_id: staff.staff_id,
+      email: staff.email,
+      role: "accountant",
+    }))) {
+      return res.status(403).json({ error: "This staff account is deactivated. Contact an administrator." });
+    }
     await syncGenericUser({
       email: teacher.email,
       username: teacher.staff_id,

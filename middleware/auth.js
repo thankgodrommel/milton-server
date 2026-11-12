@@ -1,4 +1,5 @@
 import jwt from 'jsonwebtoken';
+import { hasActiveStaffAccess } from '../utils/staffAccess.js';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'milton_college_dev_secret';
 
@@ -31,16 +32,26 @@ export function authenticate(req, res, next) {
     return res.status(401).json({ error: 'No token provided. Please log in.' });
   }
 
+  let decoded;
   try {
-    const decoded = jwt.verify(token, JWT_SECRET);
-    req.user = normalizeDirectorRole(decoded);
-    next();
+    decoded = jwt.verify(token, JWT_SECRET);
   } catch (err) {
     if (err.name === 'TokenExpiredError') {
       return res.status(401).json({ error: 'Session expired. Please log in again.' });
     }
     return res.status(401).json({ error: 'Invalid token.' });
   }
+
+  req.user = normalizeDirectorRole(decoded);
+  hasActiveStaffAccess(req.user).then((active) => {
+    if (!active) {
+      return res.status(401).json({ error: 'This staff account is deactivated. Contact an administrator.' });
+    }
+    return next();
+  }).catch((err) => {
+    console.error('[Authentication] Failed to verify staff account status:', err);
+    return res.status(500).json({ error: 'Unable to verify account status. Please try again.' });
+  });
 }
 
 /**

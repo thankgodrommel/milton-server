@@ -1412,6 +1412,74 @@ router.patch(
 
       const prismaData = sanitizeAndCoerce(model, rawData);
 
+      if (model === "Teacher" && ["Active", "Inactive"].includes(prismaData.status)) {
+        const existingTeacher = await prisma.teacher.findUnique({ where: { id } });
+        if (!existingTeacher) return res.status(404).json({ error: "Record not found." });
+
+        const roleConditions = [
+          { teacher_id: existingTeacher.id },
+          ...(existingTeacher.staff_id ? [{ teacher_id: existingTeacher.staff_id }] : []),
+          ...(existingTeacher.user_id ? [{ user_id: existingTeacher.user_id }] : []),
+          ...(existingTeacher.email
+            ? [{ user_email: { equals: existingTeacher.email, mode: "insensitive" } }]
+            : []),
+        ];
+        const record = await prisma.$transaction(async (tx) => {
+          const updatedTeacher = await tx.teacher.update({ where: { id }, data: prismaData });
+          await tx.staffRole.updateMany({
+            where: { OR: roleConditions },
+            data: { status: prismaData.status },
+          });
+          return updatedTeacher;
+        });
+        return res.json(toUIEnums(record));
+      }
+
+      if (model === "StaffRole" && ["Active", "Inactive"].includes(prismaData.status)) {
+        const existingRole = await prisma.staffRole.findUnique({ where: { id } });
+        if (!existingRole) return res.status(404).json({ error: "Record not found." });
+
+        const userEmail = existingRole.user_email || prismaData.user_email;
+        const teacherId = existingRole.teacher_id || prismaData.teacher_id;
+        const userId = existingRole.user_id || prismaData.user_id;
+        const roleConditions = [
+          ...(userEmail ? [{ user_email: { equals: userEmail, mode: "insensitive" } }] : []),
+          ...(teacherId ? [{ teacher_id: teacherId }] : []),
+          ...(userId ? [{ user_id: userId }] : []),
+        ];
+        const teacherConditions = [
+          ...(teacherId ? [{ id: teacherId }, { staff_id: teacherId }] : []),
+          ...(userId ? [{ user_id: userId }] : []),
+          ...(userEmail ? [{ email: { equals: userEmail, mode: "insensitive" } }] : []),
+        ];
+        const staffConditions = [
+          ...(teacherId ? [{ id: teacherId }, { staff_id: teacherId }] : []),
+          ...(userEmail ? [{ email: { equals: userEmail, mode: "insensitive" } }] : []),
+        ];
+
+        const record = await prisma.$transaction(async (tx) => {
+          const updatedRole = await tx.staffRole.update({ where: { id }, data: prismaData });
+          await tx.staffRole.updateMany({
+            where: { OR: roleConditions },
+            data: { status: prismaData.status },
+          });
+          if (teacherConditions.length) {
+            await tx.teacher.updateMany({
+              where: { OR: teacherConditions },
+              data: { status: prismaData.status },
+            });
+          }
+          if (staffConditions.length) {
+            await tx.nonAcademicStaff.updateMany({
+              where: { OR: staffConditions },
+              data: { status: prismaData.status },
+            });
+          }
+          return updatedRole;
+        });
+        return res.json(toUIEnums(record));
+      }
+
       // Workflow: AdmissionApplication → "Offered Admission"
       if (
         model === "AdmissionApplication" &&
