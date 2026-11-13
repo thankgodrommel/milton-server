@@ -1,24 +1,72 @@
 import prisma from "../config/prisma.js";
 
-export const isDeactivatedStaffStatus = (status) =>
-  ["inactive", "deactivated", "terminated"].includes(
-    String(status || "").trim().toLowerCase(),
-  );
+export const isInactivePortalStatus = (status) =>
+  [
+    "inactive",
+    "deactivated",
+    "terminated",
+    "suspended",
+    "withdrawn",
+    "graduated",
+    "on leave",
+    "on_leave",
+  ].includes(String(status || "").trim().toLowerCase());
 
 const emailCondition = (email) =>
   email ? { email: { equals: email, mode: "insensitive" } } : null;
 
-export async function hasActiveStaffAccess(user, database = prisma) {
+export async function hasActivePortalAccess(user, database = prisma) {
   const profileType = String(user.profile_type || "").toLowerCase();
   const roles = [user.role, ...(Array.isArray(user.roles) ? user.roles : [])]
     .map((role) => String(role || "").toLowerCase());
+  const isStudent = profileType === "student" || roles.includes("student");
+  const isParent = profileType === "parent" || roles.includes("parent");
+  const isStudentOrParent = isStudent || isParent;
+
+  if (isStudent) {
+    const studentConditions = [
+      ...(user.profile_id ? [{ id: String(user.profile_id) }] : []),
+      ...(user.id ? [{ id: String(user.id) }] : []),
+      ...((user.admission_number || user.username)
+        ? [{ admission_number: user.admission_number || user.username }]
+        : []),
+    ];
+    const students = studentConditions.length
+      ? await database.student.findMany({
+          where: { OR: studentConditions },
+          select: { status: true },
+        })
+      : [];
+    return students.length > 0 &&
+      !students.some(({ status }) => isInactivePortalStatus(status));
+  }
+
+  if (isParent) {
+    const parentConditions = [
+      ...(user.profile_id ? [{ id: String(user.profile_id) }] : []),
+      ...(user.id ? [{ id: String(user.id) }] : []),
+      ...((user.parent_id || user.username)
+        ? [{ parent_id: user.parent_id || user.username }]
+        : []),
+      ...(user.user_id ? [{ user_id: String(user.user_id) }] : []),
+      ...(user.email ? [emailCondition(String(user.email).trim())] : []),
+    ];
+    const parents = parentConditions.length
+      ? await database.parent.findMany({
+          where: { OR: parentConditions },
+          select: { status: true },
+        })
+      : [];
+    return parents.length > 0 &&
+      !parents.some(({ status }) => isInactivePortalStatus(status));
+  }
+
   if (profileType === "adminuser" || profileType === "admin") return true;
   const isNonAcademicStaff =
     profileType === "nonacademicstaff" || roles.includes("accountant");
   const isTeacher = profileType === "teacher" ||
     roles.some((role) => ["teacher", "head_teacher", "principal"].includes(role)) ||
     Boolean(user.teacher_type);
-  const isStudentOrParent = ["student", "parent"].includes(profileType);
   const email = String(user.email || "").trim();
   const staffId = String(
     user.staff_id || (isTeacher || isNonAcademicStaff ? user.username : "") || "",
@@ -38,7 +86,7 @@ export async function hasActiveStaffAccess(user, database = prisma) {
       select: { status: true },
     });
     if ((profileType === "teacher" || user.teacher_type) && !teachers.length) return false;
-    if (teachers.some(({ status }) => isDeactivatedStaffStatus(status))) return false;
+    if (teachers.some(({ status }) => isInactivePortalStatus(status))) return false;
   }
 
   const staffConditions = [
@@ -55,7 +103,7 @@ export async function hasActiveStaffAccess(user, database = prisma) {
     });
     if (
       (isNonAcademicStaff && !staffRecords.length) ||
-      staffRecords.some(({ status }) => isDeactivatedStaffStatus(status))
+      staffRecords.some(({ status }) => isInactivePortalStatus(status))
     ) {
       return false;
     }
@@ -72,7 +120,7 @@ export async function hasActiveStaffAccess(user, database = prisma) {
       where: { OR: staffRoleConditions },
       select: { status: true },
     });
-    if (staffRoles.some(({ status }) => isDeactivatedStaffStatus(status))) return false;
+    if (staffRoles.some(({ status }) => isInactivePortalStatus(status))) return false;
   }
 
   return true;

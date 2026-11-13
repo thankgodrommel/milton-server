@@ -1,5 +1,5 @@
 import jwt from 'jsonwebtoken';
-import { hasActiveStaffAccess } from '../utils/staffAccess.js';
+import { hasActivePortalAccess } from '../utils/staffAccess.js';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'milton_college_dev_secret';
 
@@ -43,9 +43,9 @@ export function authenticate(req, res, next) {
   }
 
   req.user = normalizeDirectorRole(decoded);
-  hasActiveStaffAccess(req.user).then((active) => {
+  hasActivePortalAccess(req.user).then((active) => {
     if (!active) {
-      return res.status(401).json({ error: 'This staff account is deactivated. Contact an administrator.' });
+      return res.status(401).json({ error: 'This account is inactive or deactivated. Please contact the admin.' });
     }
     return next();
   }).catch((err) => {

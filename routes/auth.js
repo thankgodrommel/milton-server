@@ -4,11 +4,11 @@ import jwt from "jsonwebtoken";
 import prisma from "../config/prisma.js";
 import { generateToken, authenticate } from "../middleware/auth.js";
 import { sendEmail } from "../services/email.js";
-import { hasActiveStaffAccess } from "../utils/staffAccess.js";
+import { hasActivePortalAccess } from "../utils/staffAccess.js";
 
 const router = Router();
-const DEACTIVATED_STAFF_MESSAGE =
-  "This staff account is deactivated. Please contact the admin to reactivate it.";
+const INACTIVE_ACCOUNT_MESSAGE =
+  "This account is inactive or deactivated. Please contact the admin to reactivate it.";
 
 async function normalizePassword(password) {
   if (!password) return null;
@@ -219,6 +219,16 @@ router.post("/login", async (req, res) => {
           .json({ error: "Invalid admission number or password." });
       }
 
+      if (!(await hasActivePortalAccess({
+        id: student.id,
+        admission_number: student.admission_number,
+        role: "student",
+        profile_type: "Student",
+        profile_id: student.id,
+      }))) {
+        return res.status(403).json({ error: INACTIVE_ACCOUNT_MESSAGE });
+      }
+
       await syncGenericUser({
         email: student.parent_email || "",
         username: student.admission_number,
@@ -275,12 +285,12 @@ router.post("/login", async (req, res) => {
           genericUser.username,
           genericUser.role
         );
-        if (!(await hasActiveStaffAccess({
+        if (!(await hasActivePortalAccess({
           ...genericUser,
           role: highestRole,
           roles,
         }))) {
-          return res.status(403).json({ error: DEACTIVATED_STAFF_MESSAGE });
+          return res.status(403).json({ error: INACTIVE_ACCOUNT_MESSAGE });
         }
 
         let resolvedStaffId = null;
@@ -391,14 +401,14 @@ router.post("/login", async (req, res) => {
       },
     });
     if (teacher) {
-      if (!(await hasActiveStaffAccess({
+      if (!(await hasActivePortalAccess({
         profile_type: "Teacher",
         profile_id: teacher.id,
         staff_id: teacher.staff_id,
         email: teacher.email,
         role: "teacher",
       }))) {
-        return res.status(403).json({ error: DEACTIVATED_STAFF_MESSAGE });
+        return res.status(403).json({ error: INACTIVE_ACCOUNT_MESSAGE });
       }
       let valid = false;
       if (teacher.custom_password) {
@@ -476,6 +486,17 @@ router.post("/login", async (req, res) => {
       }
 
       if (valid) {
+        if (!(await hasActivePortalAccess({
+          id: parent.id,
+          email: parent.email,
+          parent_id: parent.parent_id,
+          role: "parent",
+          profile_type: "Parent",
+          profile_id: parent.id,
+        }))) {
+          return res.status(403).json({ error: INACTIVE_ACCOUNT_MESSAGE });
+        }
+
         await syncGenericUser({
           email: parent.email || "",
           username: parent.parent_id,
@@ -517,14 +538,14 @@ router.post("/login", async (req, res) => {
       where: { staff_id: loginKey },
     });
     if (staff) {
-      if (!(await hasActiveStaffAccess({
+      if (!(await hasActivePortalAccess({
         profile_type: "NonAcademicStaff",
         profile_id: staff.id,
         staff_id: staff.staff_id,
         email: staff.email,
         role: "accountant",
       }))) {
-        return res.status(403).json({ error: DEACTIVATED_STAFF_MESSAGE });
+        return res.status(403).json({ error: INACTIVE_ACCOUNT_MESSAGE });
       }
 
       let valid = false;
@@ -602,14 +623,14 @@ router.post("/teacher-login", async (req, res) => {
     if (!teacher) {
       return res.status(401).json({ error: "Invalid Staff ID or password." });
     }
-    if (!(await hasActiveStaffAccess({
+    if (!(await hasActivePortalAccess({
       profile_type: "Teacher",
       profile_id: teacher.id,
       staff_id: teacher.staff_id,
       email: teacher.email,
       role: "teacher",
     }))) {
-      return res.status(403).json({ error: DEACTIVATED_STAFF_MESSAGE });
+      return res.status(403).json({ error: INACTIVE_ACCOUNT_MESSAGE });
     }
 
     // Support plain-text passwords, bcrypt hashes, and default passwords
@@ -718,6 +739,16 @@ router.post("/student-login", async (req, res) => {
         .json({ error: "Invalid admission number or password." });
     }
 
+    if (!(await hasActivePortalAccess({
+      id: student.id,
+      admission_number: student.admission_number,
+      role: "student",
+      profile_type: "Student",
+      profile_id: student.id,
+    }))) {
+      return res.status(403).json({ error: INACTIVE_ACCOUNT_MESSAGE });
+    }
+
     await syncGenericUser({
       email: student.parent_email || "",
       username: student.admission_number,
@@ -794,6 +825,17 @@ router.post("/parent-login", async (req, res) => {
       return res.status(401).json({ error: "Invalid Parent ID or password." });
     }
 
+    if (!(await hasActivePortalAccess({
+      id: parent.id,
+      email: parent.email,
+      parent_id: parent.parent_id,
+      role: "parent",
+      profile_type: "Parent",
+      profile_id: parent.id,
+    }))) {
+      return res.status(403).json({ error: INACTIVE_ACCOUNT_MESSAGE });
+    }
+
     await syncGenericUser({
       email: parent.email || "",
       username: parent.parent_id,
@@ -811,6 +853,8 @@ router.post("/parent-login", async (req, res) => {
       role: "parent",
       parent_id: parent.parent_id,
       name: `${parent.first_name || ""} ${parent.last_name || ""}`.trim(),
+      profile_type: "Parent",
+      profile_id: parent.id,
     });
 
     return res.json({
@@ -853,14 +897,14 @@ router.post("/accountant-login", async (req, res) => {
     }
 
     const record = staff;
-    if (!(await hasActiveStaffAccess({
+    if (!(await hasActivePortalAccess({
       profile_type: "NonAcademicStaff",
       profile_id: record.id,
       staff_id: record.staff_id,
       email: record.email,
       role: "accountant",
     }))) {
-      return res.status(403).json({ error: DEACTIVATED_STAFF_MESSAGE });
+      return res.status(403).json({ error: INACTIVE_ACCOUNT_MESSAGE });
     }
 
     let valid = false;
