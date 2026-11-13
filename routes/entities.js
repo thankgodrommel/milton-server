@@ -102,6 +102,32 @@ function buildAuthChain(modelName, operation) {
   return [authenticate, authorize(...roles)];
 }
 
+function userHasAnyRole(req, allowedRoles) {
+  const roles = [
+    req.user?.role,
+    ...(Array.isArray(req.user?.roles) ? req.user.roles : []),
+    req.user?.profile_type,
+  ].map((role) => String(role || "").toLowerCase().replace(/_/g, " "));
+  return allowedRoles.some((role) => roles.includes(role));
+}
+
+function canPublishEntity(req, model) {
+  const roles = model === "Calendar"
+    ? ["admin", "principal"]
+    : ["admin", "principal", "head teacher"];
+  return userHasAnyRole(req, roles);
+}
+
+function canManageTimetableSection(req, section) {
+  const isAdmin = userHasAnyRole(req, ["admin"]);
+  const isPrincipal = userHasAnyRole(req, ["principal"]);
+  const isHeadTeacher = userHasAnyRole(req, ["head teacher"]);
+  if (isAdmin || (isPrincipal && isHeadTeacher)) return true;
+  if (isPrincipal) return section === "Secondary";
+  if (isHeadTeacher) return ["Primary", "Nursery"].includes(section);
+  return false;
+}
+
 function parseSort(sortStr) {
   if (!sortStr) return { created_date: "desc" };
   const desc = sortStr.startsWith("-");
@@ -1011,6 +1037,20 @@ router.post(
         ...rawData
       } = req.body;
 
+      if (["Calendar", "Timetable"].includes(model) && rawData.status === undefined) {
+        rawData.status = "Draft";
+      }
+      if (model === "Timetable" && !canManageTimetableSection(req, rawData.section)) {
+        return res.status(403).json({ error: "You can only manage timetables for your assigned school subsection." });
+      }
+      if (
+        ["Calendar", "Timetable"].includes(model) &&
+        ["published", "active"].includes(String(rawData.status || "").toLowerCase()) &&
+        !canPublishEntity(req, model)
+      ) {
+        return res.status(403).json({ error: `Your role cannot publish ${model.toLowerCase()} records.` });
+      }
+
       if (model === "Attendance") {
         const attendanceScope = await getAttendanceTeacherScope(req);
         if (
@@ -1229,6 +1269,41 @@ router.patch(
         updated_date,
         ...rawData
       } = req.body;
+
+      if (model === "Timetable" && (rawData.section !== undefined || rawData.status !== undefined)) {
+        const existingTimetable = await db.findUnique({
+          where: { id },
+          select: { section: true },
+        });
+        if (!existingTimetable) return res.status(404).json({ error: "Record not found." });
+        const targetSection = rawData.section === undefined
+          ? existingTimetable.section
+          : rawData.section;
+        if (!canManageTimetableSection(req, targetSection)) {
+          return res.status(403).json({ error: "You can only manage timetables for your assigned school subsection." });
+        }
+      }
+      if (model === "Calendar" && rawData.status !== undefined) {
+        const existingCalendar = await db.findUnique({
+          where: { id },
+          select: { status: true },
+        });
+        if (!existingCalendar) return res.status(404).json({ error: "Record not found." });
+        if (
+          rawData.status !== existingCalendar.status &&
+          !userHasAnyRole(req, ["admin", "principal"])
+        ) {
+          return res.status(403).json({ error: "Only administrators and principals can publish or unpublish calendars." });
+        }
+      }
+      if (
+        model === "Timetable" &&
+        rawData.status !== undefined &&
+        ["published", "active"].includes(String(rawData.status || "").toLowerCase()) &&
+        !canPublishEntity(req, model)
+      ) {
+        return res.status(403).json({ error: "Your role cannot publish timetable records." });
+      }
 
       if (model === "Attendance") {
         const attendanceScope = await getAttendanceTeacherScope(req);
