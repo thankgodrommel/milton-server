@@ -58,3 +58,20 @@ test("denies the entire account when any linked portal role is deactivated", asy
     false,
   );
 });
+
+test("checks teacher status even when the account resolves as non-academic staff", async () => {
+  const database = {
+    teacher: { findMany: async () => [{ status: "Inactive" }] },
+    nonAcademicStaff: { findMany: async () => [{ status: "Active" }] },
+  };
+
+  assert.equal(
+    await hasActiveStaffAccess({
+      profile_type: "NonAcademicStaff",
+      profile_id: "staff-100",
+      staff_id: "S-100",
+      role: "accountant",
+    }, database),
+    false,
+  );
+});

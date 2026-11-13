@@ -18,6 +18,7 @@ export async function hasActiveStaffAccess(user, database = prisma) {
   const isTeacher = profileType === "teacher" ||
     roles.some((role) => ["teacher", "head_teacher", "principal"].includes(role)) ||
     Boolean(user.teacher_type);
+  const isStudentOrParent = ["student", "parent"].includes(profileType);
   const email = String(user.email || "").trim();
   const staffId = String(
     user.staff_id || (isTeacher || isNonAcademicStaff ? user.username : "") || "",
@@ -28,10 +29,10 @@ export async function hasActiveStaffAccess(user, database = prisma) {
     ...(profileId && (isTeacher || profileType === "teacher") ? [{ id: profileId }] : []),
     ...(user.id && profileType === "teacher" ? [{ id: user.id }] : []),
     ...(staffId ? [{ staff_id: staffId }] : []),
-    ...(isTeacher && email ? [emailCondition(email)] : []),
+    ...(email && !isStudentOrParent ? [emailCondition(email)] : []),
   ].filter(Boolean);
 
-  if (isTeacher && teacherConditions.length) {
+  if (!isStudentOrParent && teacherConditions.length) {
     const teachers = await database.teacher.findMany({
       where: { OR: teacherConditions },
       select: { status: true },
@@ -44,16 +45,16 @@ export async function hasActiveStaffAccess(user, database = prisma) {
     ...(profileId && isNonAcademicStaff ? [{ id: profileId }] : []),
     ...(user.id && isNonAcademicStaff ? [{ id: user.id }] : []),
     ...(staffId ? [{ staff_id: staffId }] : []),
-    ...(isNonAcademicStaff && email ? [emailCondition(email)] : []),
+    ...(email && !isStudentOrParent ? [emailCondition(email)] : []),
   ].filter(Boolean);
 
-  if (isNonAcademicStaff && staffConditions.length) {
+  if (!isStudentOrParent && staffConditions.length) {
     const staffRecords = await database.nonAcademicStaff.findMany({
       where: { OR: staffConditions },
       select: { status: true },
     });
     if (
-      !staffRecords.length ||
+      (isNonAcademicStaff && !staffRecords.length) ||
       staffRecords.some(({ status }) => isDeactivatedStaffStatus(status))
     ) {
       return false;
