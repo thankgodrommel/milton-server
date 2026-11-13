@@ -46,7 +46,11 @@ app.use("/api/logs", logsRoute);
 
 // Health check
 app.get("/api/health", (req, res) => {
-  res.json({ status: "ok", timestamp: new Date().toISOString() });
+  res.json({
+    status: "ok",
+    timestamp: new Date().toISOString(),
+    revision: process.env.RENDER_GIT_COMMIT || process.env.GITHUB_SHA || "unknown",
+  });
 });
 
 // 404 handler for API routes
