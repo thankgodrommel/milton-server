@@ -1,11 +1,36 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { isDeactivatedStaffStatus } from "../utils/staffAccess.js";
+import { hasActiveStaffAccess } from "../utils/staffAccess.js";
 
-test("recognizes deactivated staff status regardless of capitalization or whitespace", () => {
-  assert.equal(isDeactivatedStaffStatus("Deactivated"), true);
-  assert.equal(isDeactivatedStaffStatus(" INACTIVE "), true);
-  assert.equal(isDeactivatedStaffStatus("Terminated"), true);
-  assert.equal(isDeactivatedStaffStatus("Active"), false);
-  assert.equal(isDeactivatedStaffStatus(null), false);
+test("denies teacher access when any matching teacher profile is deactivated", async () => {
+  const database = {
+    teacher: {
+      findMany: async () => [{ status: "Active" }, { status: "Deactivated" }],
+    },
+  };
+
+  assert.equal(
+    await hasActiveStaffAccess({
+      profile_type: "Teacher",
+      profile_id: "teacher-profile",
+      staff_id: "T-100",
+      role: "teacher",
+    }, database),
+    false,
+  );
+});
+
+test("denies accountant access when the stored profile type is missing", async () => {
+  const database = {
+    teacher: { findMany: async () => [] },
+    nonAcademicStaff: { findMany: async () => [{ status: "Inactive" }] },
+  };
+
+  assert.equal(
+    await hasActiveStaffAccess({
+      username: "S-100",
+      role: "accountant",
+    }, database),
+    false,
+  );
 });

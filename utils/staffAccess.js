@@ -8,17 +8,20 @@ export const isDeactivatedStaffStatus = (status) =>
 const emailCondition = (email) =>
   email ? { email: { equals: email, mode: "insensitive" } } : null;
 
-export async function hasActiveStaffAccess(user) {
+export async function hasActiveStaffAccess(user, database = prisma) {
   const profileType = String(user.profile_type || "").toLowerCase();
   const roles = [user.role, ...(Array.isArray(user.roles) ? user.roles : [])]
     .map((role) => String(role || "").toLowerCase());
   if (profileType === "adminuser" || profileType === "admin") return true;
+  const isNonAcademicStaff =
+    profileType === "nonacademicstaff" || roles.includes("accountant");
   const isTeacher = profileType === "teacher" ||
     roles.some((role) => ["teacher", "head_teacher", "principal"].includes(role)) ||
-    Boolean(user.teacher_type || user.staff_id);
-  const isNonAcademicStaff = profileType === "nonacademicstaff";
+    Boolean(user.teacher_type);
   const email = String(user.email || "").trim();
-  const staffId = String(user.staff_id || (isTeacher ? user.username : "") || "").trim();
+  const staffId = String(
+    user.staff_id || (isTeacher || isNonAcademicStaff ? user.username : "") || "",
+  ).trim();
   const profileId = String(user.profile_id || "").trim();
 
   const teacherConditions = [
@@ -29,9 +32,12 @@ export async function hasActiveStaffAccess(user) {
   ].filter(Boolean);
 
   if (isTeacher && teacherConditions.length) {
-    const teacher = await prisma.teacher.findFirst({ where: { OR: teacherConditions } });
-    if ((profileType === "teacher" || user.teacher_type) && !teacher) return false;
-    if (teacher && isDeactivatedStaffStatus(teacher.status)) return false;
+    const teachers = await database.teacher.findMany({
+      where: { OR: teacherConditions },
+      select: { status: true },
+    });
+    if ((profileType === "teacher" || user.teacher_type) && !teachers.length) return false;
+    if (teachers.some(({ status }) => isDeactivatedStaffStatus(status))) return false;
   }
 
   const staffConditions = [
@@ -42,8 +48,16 @@ export async function hasActiveStaffAccess(user) {
   ].filter(Boolean);
 
   if (isNonAcademicStaff && staffConditions.length) {
-    const staff = await prisma.nonAcademicStaff.findFirst({ where: { OR: staffConditions } });
-    if (!staff || isDeactivatedStaffStatus(staff.status)) return false;
+    const staffRecords = await database.nonAcademicStaff.findMany({
+      where: { OR: staffConditions },
+      select: { status: true },
+    });
+    if (
+      !staffRecords.length ||
+      staffRecords.some(({ status }) => isDeactivatedStaffStatus(status))
+    ) {
+      return false;
+    }
   }
 
   const staffRoleConditions = [
@@ -52,7 +66,7 @@ export async function hasActiveStaffAccess(user) {
     ...(profileId ? [{ teacher_id: profileId }, { user_id: profileId }] : []),
   ];
   if (!["student", "parent"].includes(profileType) && staffRoleConditions.length) {
-    const staffRoles = await prisma.staffRole.findMany({
+    const staffRoles = await database.staffRole.findMany({
       where: { OR: staffRoleConditions },
       select: { status: true },
     });
