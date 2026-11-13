@@ -1,7 +1,9 @@
 import prisma from "../config/prisma.js";
 
-const isDeactivated = (status) =>
-  ["inactive", "terminated"].includes(String(status || "").trim().toLowerCase());
+export const isDeactivatedStaffStatus = (status) =>
+  ["inactive", "deactivated", "terminated"].includes(
+    String(status || "").trim().toLowerCase(),
+  );
 
 const emailCondition = (email) =>
   email ? { email: { equals: email, mode: "insensitive" } } : null;
@@ -29,7 +31,7 @@ export async function hasActiveStaffAccess(user) {
   if (isTeacher && teacherConditions.length) {
     const teacher = await prisma.teacher.findFirst({ where: { OR: teacherConditions } });
     if ((profileType === "teacher" || user.teacher_type) && !teacher) return false;
-    if (teacher && isDeactivated(teacher.status)) return false;
+    if (teacher && isDeactivatedStaffStatus(teacher.status)) return false;
   }
 
   const staffConditions = [
@@ -41,7 +43,7 @@ export async function hasActiveStaffAccess(user) {
 
   if (isNonAcademicStaff && staffConditions.length) {
     const staff = await prisma.nonAcademicStaff.findFirst({ where: { OR: staffConditions } });
-    if (!staff || isDeactivated(staff.status)) return false;
+    if (!staff || isDeactivatedStaffStatus(staff.status)) return false;
   }
 
   const staffRoleConditions = [
