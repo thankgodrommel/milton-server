@@ -34,3 +34,27 @@ test("denies accountant access when the stored profile type is missing", async (
     false,
   );
 });
+
+test("denies the entire account when any linked portal role is deactivated", async () => {
+  const database = {
+    teacher: { findMany: async () => [{ status: "Active" }] },
+    staffRole: {
+      findMany: async ({ where }) => {
+        assert.ok(
+          where.OR.some((condition) => condition.user_id === "user-100"),
+        );
+        return [{ status: "Active" }, { status: "Inactive" }];
+      },
+    },
+  };
+
+  assert.equal(
+    await hasActiveStaffAccess({
+      id: "user-100",
+      profile_type: "Teacher",
+      profile_id: "teacher-100",
+      role: "teacher",
+    }, database),
+    false,
+  );
+});

@@ -62,6 +62,7 @@ export async function hasActiveStaffAccess(user, database = prisma) {
 
   const staffRoleConditions = [
     ...(email ? [{ user_email: { equals: email, mode: "insensitive" } }] : []),
+    ...(user.id ? [{ user_id: user.id }] : []),
     ...(staffId ? [{ teacher_id: staffId }, { user_id: staffId }] : []),
     ...(profileId ? [{ teacher_id: profileId }, { user_id: profileId }] : []),
   ];
@@ -70,10 +71,7 @@ export async function hasActiveStaffAccess(user, database = prisma) {
       where: { OR: staffRoleConditions },
       select: { status: true },
     });
-    if (staffRoles.length && !staffRoles.some(({ status }) =>
-      String(status || "").toLowerCase() === "active")) {
-      return false;
-    }
+    if (staffRoles.some(({ status }) => isDeactivatedStaffStatus(status))) return false;
   }
 
   return true;
