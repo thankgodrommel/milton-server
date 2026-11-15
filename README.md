@@ -12,6 +12,21 @@ pinned: false
 
 Backend API server for Milton College Portal built with Express.js and Prisma.
 
+## Student transcript APIs
+
+The transcript portal supports Primary 5 and SS3. Admins can access both stages,
+principals can access SS3, and head teachers can access Primary 5. All transcript
+endpoints require a bearer token; student eligibility and role scope are checked
+by the API.
+
+- `GET /api/transcripts/students?stage=primary5|ss3` — Lists eligible active or graduated students.
+- `GET /api/transcripts/students/:studentId?stage=primary5|ss3` — Loads student details, available results from the student's school history, and any saved transcript.
+- `PUT /api/transcripts/students/:studentId` — Saves an edited transcript using `{ "stage": "primary5|ss3", "data": { "years": [...] } }`.
+
+The first request for a student builds editable transcript rows from existing academic
+results. Transcript edits are stored in the `student_transcripts` table. Before deploying
+the schema change, run `npm run db:generate` and `npm run db:push` against the target database.
+
 ## ID card APIs
 
 - `POST /api/id-cards/issue` — Admin/accountant only; signs a card token valid through the card's three-year expiry date.

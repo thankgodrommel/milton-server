@@ -631,6 +631,19 @@ model Result {
   @@map("results")
 }
 
+model StudentTranscript {
+  id           String   @id @default(cuid())
+  student_id   String
+  stage        String
+  data         Json
+  updated_by   String?
+  created_date DateTime @default(now()) @map("created_date")
+  updated_date DateTime @updatedAt @map("updated_date")
+
+  @@unique([student_id, stage])
+  @@map("student_transcripts")
+}
+
 model ReportCard {
   id                    String            @id @default(cuid())
   student_id            String

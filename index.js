@@ -15,6 +15,7 @@ import resultsRoutes from "./routes/results.js";
 import cbtRoutes from "./routes/cbt.js";
 import idCardRoutes from "./routes/idCards.js";
 import staffAttendanceRoutes from "./routes/staffAttendance.js";
+import transcriptsRoutes from "./routes/transcripts.js";
 
 dotenv.config();
 
@@ -36,6 +37,7 @@ app.use("/api/cbt", cbtRoutes);
 app.use("/api/results", resultsRoutes);
 app.use("/api/id-cards", idCardRoutes);
 app.use("/api/staff-attendance", staffAttendanceRoutes);
+app.use("/api/transcripts", transcriptsRoutes);
 app.use("/api/entities", entityRoutes);
 app.use("/api/integrations", integrationsRoutes);
 app.use("/api", integrationsRoutes); // Alias for /api/upload & /api/email/send
