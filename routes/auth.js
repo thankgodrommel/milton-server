@@ -90,7 +90,14 @@ async function resolveStaffRoles(email, staffId, defaultType) {
       .findMany({
         where: {
           OR: [
-            ...(email ? [{ user_email: email.toLowerCase() }] : []),
+            ...(email
+              ? [{
+                  user_email: {
+                    equals: email.toLowerCase(),
+                    mode: "insensitive",
+                  },
+                }]
+              : []),
             ...(staffId
               ? [{ user_id: staffId }, { teacher_id: staffId }]
               : []),
@@ -561,11 +568,22 @@ router.post("/login", async (req, res) => {
       }
 
       if (valid) {
+        const { highestRole, roles } = await resolveStaffRoles(
+          staff.email,
+          staff.staff_id,
+          staff.role
+        );
+        if (!roles.includes("accountant")) {
+          return res.status(403).json({
+            error: "This staff member has not been assigned Accountant access.",
+          });
+        }
+
         await syncGenericUser({
           email: staff.email || "",
           username: staff.staff_id,
           password: staff.custom_password || "admin220",
-          role: "accountant",
+          role: highestRole,
           first_name: staff.first_name,
           last_name: staff.last_name,
           profile_type: "NonAcademicStaff",
@@ -575,7 +593,8 @@ router.post("/login", async (req, res) => {
         const token = generateToken({
           id: staff.id,
           email: staff.email || "",
-          role: "accountant",
+          role: highestRole,
+          roles,
           username: staff.staff_id,
           name: `${staff.first_name} ${staff.last_name}`,
           profile_type: "NonAcademicStaff",
@@ -588,7 +607,8 @@ router.post("/login", async (req, res) => {
             id: staff.id,
             email: staff.email || "",
             username: staff.staff_id,
-            role: "accountant",
+            role: highestRole,
+            roles,
             first_name: staff.first_name,
             last_name: staff.last_name,
             profile_type: "NonAcademicStaff",
@@ -923,11 +943,22 @@ router.post("/accountant-login", async (req, res) => {
       return res.status(401).json({ error: "Invalid Staff ID or password." });
     }
 
+    const { highestRole, roles } = await resolveStaffRoles(
+      record.email,
+      record.staff_id,
+      record.role
+    );
+    if (!roles.includes("accountant")) {
+      return res.status(403).json({
+        error: "This staff member has not been assigned Accountant access.",
+      });
+    }
+
     await syncGenericUser({
       email: record.email || "",
       username: record.staff_id,
       password: record.custom_password || "admin220",
-      role: "accountant",
+      role: highestRole,
       first_name: record.first_name,
       last_name: record.last_name,
       profile_type: "NonAcademicStaff",
@@ -937,14 +968,15 @@ router.post("/accountant-login", async (req, res) => {
     const token = generateToken({
       id: record.id,
       email: record.email || "",
-      role: "accountant",
+      role: highestRole,
+      roles,
       staff_id: record.staff_id,
       name: `${record.first_name} ${record.last_name}`,
       profile_type: "NonAcademicStaff",
       profile_id: record.id,
     });
 
-    return res.json({ token, staff: { ...record, role: "accountant" } });
+    return res.json({ token, staff: { ...record, role: highestRole, roles } });
   } catch (err) {
     console.error("[auth/accountant-login]", err);
     return res.status(500).json({ error: "Login failed. Please try again." });
@@ -957,6 +989,23 @@ router.post("/accountant-login", async (req, res) => {
 router.get("/me", authenticate, async (req, res) => {
   try {
     const user = { ...req.user };
+    if (
+      !["student", "parent", "adminuser", "director"].includes(
+        String(user.profile_type || "").toLowerCase()
+      )
+    ) {
+      const { highestRole, roles } = await resolveStaffRoles(
+        user.email,
+        user.staff_id || user.username,
+        user.role
+      );
+      user.roles = roles;
+      user.role = roles.length
+        ? highestRole
+        : String(user.role || "").toLowerCase() === "accountant"
+          ? "staff"
+          : highestRole;
+    }
     const teacher = await prisma.teacher.findFirst({
       where: {
         OR: [

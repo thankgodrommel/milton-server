@@ -70,6 +70,47 @@ function resolveModel(modelName) {
   return factory();
 }
 
+async function ensureAccountantStaffRole(database, staff) {
+  if (String(staff.role || "").trim().toLowerCase() !== "accountant") return;
+
+  const identifiers = [
+    ...(staff.staff_id ? [{ teacher_id: staff.staff_id }] : []),
+    { teacher_id: staff.id },
+    ...(staff.email
+      ? [{ user_email: { equals: staff.email, mode: "insensitive" } }]
+      : []),
+  ];
+  const status = String(staff.status || "Active").toLowerCase() === "active"
+    ? "Active"
+    : "Inactive";
+  const existingRole = await database.staffRole.findFirst({
+    where: { role: "Accountant", OR: identifiers },
+  });
+
+  if (existingRole) {
+    await database.staffRole.update({
+      where: { id: existingRole.id },
+      data: {
+        user_email: staff.email || "",
+        user_name: `${staff.first_name || ""} ${staff.last_name || ""}`.trim(),
+        teacher_id: staff.staff_id || staff.id,
+        status,
+      },
+    });
+    return;
+  }
+
+  await database.staffRole.create({
+    data: {
+      user_email: staff.email || "",
+      user_name: `${staff.first_name || ""} ${staff.last_name || ""}`.trim(),
+      teacher_id: staff.staff_id || staff.id,
+      role: "Accountant",
+      status,
+    },
+  });
+}
+
 async function hasIssuedResultToken(result, db = prisma) {
   if (!result?.student_id || !result?.term || !result?.session) return false;
   return Boolean(await db.resultToken.findFirst({
@@ -1222,7 +1263,13 @@ router.post(
       }
 
       const prismaData = sanitizeAndCoerce(model, rawData);
-      const record = ["Result", "ReportCard"].includes(model)
+      const record = model === "NonAcademicStaff"
+        ? await prisma.$transaction(async (tx) => {
+          const staff = await tx.nonAcademicStaff.create({ data: prismaData });
+          await ensureAccountantStaffRole(tx, staff);
+          return staff;
+        })
+        : ["Result", "ReportCard"].includes(model)
         ? await prisma.$transaction(async (tx) => {
           if (await hasIssuedResultToken(prismaData, tx)) throw lockedResultError();
           return (model === "Result" ? tx.result : tx.reportCard).create({ data: prismaData });
@@ -1587,7 +1634,16 @@ router.patch(
         }
       }
 
-      const record = ["Result", "ReportCard"].includes(model)
+      const record = model === "NonAcademicStaff"
+        ? await prisma.$transaction(async (tx) => {
+          const staff = await tx.nonAcademicStaff.update({
+            where: { id },
+            data: prismaData,
+          });
+          await ensureAccountantStaffRole(tx, staff);
+          return staff;
+        })
+        : ["Result", "ReportCard"].includes(model)
         ? await prisma.$transaction(async (tx) => {
           const resultDb = model === "Result" ? tx.result : tx.reportCard;
           const existingResult = await resultDb.findUnique({ where: { id } });

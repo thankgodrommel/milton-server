@@ -1,4 +1,5 @@
 import jwt from 'jsonwebtoken';
+import prisma from '../config/prisma.js';
 import { hasActivePortalAccess } from '../utils/staffAccess.js';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'milton_college_dev_secret';
@@ -15,6 +16,48 @@ function normalizeDirectorRole(user) {
     user.roles = ['director'];
   }
   return user;
+}
+
+async function refreshAccountantRole(user) {
+  const identifiers = [
+    ...(user.email
+      ? [{ user_email: { equals: String(user.email).trim(), mode: 'insensitive' } }]
+      : []),
+    ...(user.staff_id || user.username
+      ? [
+          { teacher_id: user.staff_id || user.username },
+          { user_id: user.staff_id || user.username },
+        ]
+      : []),
+    ...(user.profile_id
+      ? [{ teacher_id: user.profile_id }, { user_id: user.profile_id }]
+      : []),
+  ];
+  const hasAccountantAssignment = identifiers.length > 0 &&
+    Boolean(await prisma.staffRole.findFirst({
+      where: {
+        role: 'Accountant',
+        status: 'Active',
+        OR: identifiers,
+      },
+      select: { id: true },
+    }));
+
+  const roles = new Set(
+    (Array.isArray(user.roles) && user.roles.length > 0
+      ? user.roles
+      : [user.role]
+    ).map((role) => String(role || '').toLowerCase()),
+  );
+  if (hasAccountantAssignment) {
+    roles.add('accountant');
+  } else {
+    roles.delete('accountant');
+  }
+  user.roles = [...roles];
+  if (String(user.role || '').toLowerCase() === 'accountant' && !hasAccountantAssignment) {
+    user.role = [...roles][0] || 'staff';
+  }
 }
 
 /**
@@ -43,15 +86,18 @@ export function authenticate(req, res, next) {
   }
 
   req.user = normalizeDirectorRole(decoded);
-  hasActivePortalAccess(req.user).then((active) => {
-    if (!active) {
-      return res.status(401).json({ error: 'This account is inactive or deactivated. Please contact the admin.' });
-    }
-    return next();
-  }).catch((err) => {
-    console.error('[Authentication] Failed to verify staff account status:', err);
-    return res.status(500).json({ error: 'Unable to verify account status. Please try again.' });
-  });
+  refreshAccountantRole(req.user)
+    .then(() => hasActivePortalAccess(req.user))
+    .then((active) => {
+      if (!active) {
+        return res.status(401).json({ error: 'This account is inactive or deactivated. Please contact the admin.' });
+      }
+      return next();
+    })
+    .catch((err) => {
+      console.error('[Authentication] Failed to verify staff account status:', err);
+      return res.status(500).json({ error: 'Unable to verify account status. Please try again.' });
+    });
 }
 
 /**
