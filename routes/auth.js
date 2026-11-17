@@ -26,7 +26,8 @@ async function syncGenericUser({
   profile_id,
 }) {
   const filters = [];
-  if (email) filters.push({ email: email.toLowerCase() });
+  const isStudent = String(profile_type || "").toLowerCase() === "student";
+  if (email && !isStudent) filters.push({ email: email.toLowerCase() });
   if (username) filters.push({ username: username.trim() });
   if (profile_type && profile_id) filters.push({ profile_type, profile_id });
 
@@ -43,7 +44,8 @@ async function syncGenericUser({
     profile_type,
     profile_id,
   };
-  if (email) data.email = email.toLowerCase();
+  if (isStudent) data.email = null;
+  else if (email) data.email = email.toLowerCase();
   if (username) data.username = username.trim();
   if (hashedPassword) data.password = hashedPassword;
 
@@ -237,7 +239,7 @@ router.post("/login", async (req, res) => {
       }
 
       await syncGenericUser({
-        email: student.parent_email || "",
+        email: "",
         username: student.admission_number,
         password: student.custom_password || "User123",
         role: "student",
@@ -280,7 +282,11 @@ router.post("/login", async (req, res) => {
       },
     });
 
-    if (genericUser && genericUser.password) {
+    if (
+      genericUser &&
+      String(genericUser.profile_type || "").toLowerCase() !== "student" &&
+      genericUser.password
+    ) {
       const isBcrypt = genericUser.password.startsWith("$2");
       const valid = isBcrypt
         ? await bcrypt.compare(password, genericUser.password)
@@ -770,7 +776,7 @@ router.post("/student-login", async (req, res) => {
     }
 
     await syncGenericUser({
-      email: student.parent_email || "",
+      email: "",
       username: student.admission_number,
       password: student.custom_password || "User123",
       role: "student",
@@ -1314,7 +1320,10 @@ router.post("/change-password", authenticate, async (req, res) => {
     const profileType = req.user.profile_type;
     const profileId = req.user.profile_id;
     const username = req.user.username;
-    const admissionNumber = req.user.admission_number || (userRole === "student" ? username : null);
+    const isStudent =
+      String(profileType || "").toLowerCase() === "student" ||
+      String(userRole || "").toLowerCase() === "student";
+    const admissionNumber = req.user.admission_number || (isStudent ? username : null);
 
     // Find Student record if user is student
     let studentRecord = null;
@@ -1332,8 +1341,18 @@ router.post("/change-password", authenticate, async (req, res) => {
     }
 
     // Find User table record
-    const userRecord = await prisma.user.findFirst({
-      where: {
+    const userRecordWhere = isStudent
+      ? {
+          OR: [
+            ...(admissionNumber
+              ? [{ username: admissionNumber, profile_type: "Student" }]
+              : []),
+            ...(studentRecord
+              ? [{ profile_type: "Student", profile_id: studentRecord.id }]
+              : []),
+          ],
+        }
+      : {
         OR: [
           { id: userId },
           ...(userEmail ? [{ email: userEmail }] : []),
@@ -1342,8 +1361,8 @@ router.post("/change-password", authenticate, async (req, res) => {
           ...(profileId ? [{ profile_id: profileId }] : []),
           ...(studentRecord ? [{ profile_id: studentRecord.id }] : []),
         ],
-      },
-    });
+      };
+    const userRecord = await prisma.user.findFirst({ where: userRecordWhere });
 
     if (current_password) {
       let valid = false;
@@ -1376,11 +1395,14 @@ router.post("/change-password", authenticate, async (req, res) => {
     if (userRecord) {
       await prisma.user.update({
         where: { id: userRecord.id },
-        data: { password: hashedPassword },
+        data: {
+          password: hashedPassword,
+          ...(isStudent ? { email: null } : {}),
+        },
       });
     } else if (studentRecord) {
       await syncGenericUser({
-        email: studentRecord.parent_email || "",
+        email: "",
         username: studentRecord.admission_number,
         password: hashedPassword,
         role: "student",
@@ -1542,10 +1564,8 @@ router.post("/forgot-password-lookup", async (req, res) => {
     }
 
     // 3. Check Student
-    const student = await prisma.student.findFirst({
-      where: {
-        OR: [{ admission_number: key }],
-      },
+    const student = await prisma.student.findUnique({
+      where: { admission_number: key },
     });
     if (student) {
       const parentPhone = student.parent_phone || "";
@@ -1750,7 +1770,10 @@ router.post("/forgot-password-reset", async (req, res) => {
     if (genericUser) {
       await prisma.user.update({
         where: { id: genericUser.id },
-        data: { password: hashedPassword },
+        data: {
+          password: hashedPassword,
+          ...(entity_type === "Student" ? { email: null } : {}),
+        },
       });
     }
 
@@ -1855,18 +1878,38 @@ router.post("/send-password-reset-email", async (req, res) => {
     let targetName = "User";
     let entityType = "User";
     let recordId = null;
+    let studentAdmissionNumber = null;
+
+    // Student accounts are identified by admission number, never by shared parent contacts.
+    const student = await prisma.student.findUnique({
+      where: { admission_number: key },
+    });
+    if (student) {
+      if (!student.parent_email) {
+        return res.status(404).json({
+          error: "No parent email is registered for this student. Please contact the school.",
+        });
+      }
+      targetEmail = student.parent_email;
+      targetName = `${student.first_name} ${student.last_name}`.trim();
+      entityType = "Student";
+      recordId = student.id;
+      studentAdmissionNumber = student.admission_number;
+    }
 
     // 1. Look in AdminUser
-    const admin = await prisma.adminUser.findFirst({
-      where: {
-        OR: [{ email: emailKey }, { id: key }],
-      },
-    });
-    if (admin && admin.email) {
-      targetEmail = admin.email;
-      targetName = `${admin.first_name || "Admin"} ${admin.last_name || ""}`.trim();
-      entityType = "AdminUser";
-      recordId = admin.id;
+    if (!targetEmail) {
+      const admin = await prisma.adminUser.findFirst({
+        where: {
+          OR: [{ email: emailKey }, { id: key }],
+        },
+      });
+      if (admin && admin.email) {
+        targetEmail = admin.email;
+        targetName = `${admin.first_name || "Admin"} ${admin.last_name || ""}`.trim();
+        entityType = "AdminUser";
+        recordId = admin.id;
+      }
     }
 
     // 2. Look in Teacher
@@ -1884,6 +1927,7 @@ router.post("/send-password-reset-email", async (req, res) => {
       }
     }
 
+    /* No email or phone lookup for Student: those values can be shared by siblings. */
     // 3. Look in Parent
     if (!targetEmail) {
       const parent = await prisma.parent.findFirst({
@@ -1896,21 +1940,6 @@ router.post("/send-password-reset-email", async (req, res) => {
         targetName = `${parent.first_name || parent.full_name || "Parent"} ${parent.last_name || ""}`.trim();
         entityType = "Parent";
         recordId = parent.id;
-      }
-    }
-
-    // 4. Look in Student (sends to parent_email)
-    if (!targetEmail) {
-      const student = await prisma.student.findFirst({
-        where: {
-          OR: [{ admission_number: key }, { parent_email: emailKey }],
-        },
-      });
-      if (student && student.parent_email) {
-        targetEmail = student.parent_email;
-        targetName = `${student.first_name} ${student.last_name}`.trim();
-        entityType = "Student";
-        recordId = student.id;
       }
     }
 
@@ -1936,7 +1965,11 @@ router.post("/send-password-reset-email", async (req, res) => {
           OR: [{ email: emailKey }, { username: key }],
         },
       });
-      if (user && user.email) {
+      if (
+        user &&
+        user.email &&
+        String(user.profile_type || "").toLowerCase() !== "student"
+      ) {
         targetEmail = user.email;
         targetName = `${user.first_name || ""} ${user.last_name || ""}`.trim() || "User";
         entityType = user.profile_type || "User";
@@ -1958,6 +1991,9 @@ router.post("/send-password-reset-email", async (req, res) => {
         email: targetEmail.toLowerCase(),
         entity_type: entityType,
         purpose: "password-reset",
+        ...(entityType === "Student"
+          ? { admission_number: studentAdmissionNumber }
+          : {}),
       },
       jwtSecret,
       { expiresIn: "1h" }
@@ -1969,7 +2005,20 @@ router.post("/send-password-reset-email", async (req, res) => {
     const resetLink = `${originUrl}/ResetPassword?token=${encodeURIComponent(resetToken)}`;
 
     // Prepare rich HTML email
-    const subject = "Password Reset Request — Milton College Portal";
+    const studentAccountLine = entityType === "Student"
+      ? `<p>Student Admission Number: <strong>${String(studentAdmissionNumber)
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;")
+          .replace(/'/g, "&#39;")}</strong></p>`
+      : "";
+    const studentAccountText = entityType === "Student"
+      ? `Student Admission Number: ${studentAdmissionNumber}\n\n`
+      : "";
+    const subject = entityType === "Student"
+      ? `Password Reset Request — Admission ${studentAdmissionNumber} | Milton College`
+      : "Password Reset Request — Milton College Portal";
     const htmlBody = `
       <!DOCTYPE html>
       <html>
@@ -1998,6 +2047,7 @@ router.post("/send-password-reset-email", async (req, res) => {
           </div>
           <div class="content">
             <p>Hello <strong>${targetName}</strong>,</p>
+            ${studentAccountLine}
             <p>We received a request to reset your password for your Milton College Portal account.</p>
             <p>Click the button below to choose a new password. This link is valid for <strong>1 hour</strong>.</p>
             
@@ -2020,7 +2070,7 @@ router.post("/send-password-reset-email", async (req, res) => {
       </html>
     `;
 
-    const textBody = `Hello ${targetName},\n\nYou requested a password reset for your Milton College Portal account.\n\nUse this link to reset your password (valid for 1 hour):\n${resetLink}\n\nIf you did not request this, you can safely ignore this email.\n\nMilton College Administration`;
+    const textBody = `Hello ${targetName},\n\n${studentAccountText}You requested a password reset for your Milton College Portal account.\n\nUse this link to reset your password (valid for 1 hour):\n${resetLink}\n\nIf you did not request this, you can safely ignore this email.\n\nMilton College Administration`;
 
     // Send email via Resend SMTP
     await sendEmail({
@@ -2079,6 +2129,7 @@ router.post("/verify-reset-token", async (req, res) => {
       email: decoded.email,
       masked_email: maskedEmail,
       entity_type: decoded.entity_type,
+      admission_number: decoded.admission_number || null,
     });
   } catch (err) {
     console.error("[auth/verify-reset-token]", err);
@@ -2119,7 +2170,12 @@ router.post("/complete-password-reset", async (req, res) => {
       return res.status(400).json({ error: "Invalid token purpose." });
     }
 
-    const { id: recordId, email: targetEmail, entity_type: entityType } = decoded;
+    const {
+      id: recordId,
+      email: targetEmail,
+      entity_type: entityType,
+      admission_number: admissionNumber,
+    } = decoded;
     const hashedPassword = await bcrypt.hash(new_password, 12);
 
     // Update in role-specific entity table
@@ -2158,13 +2214,11 @@ router.post("/complete-password-reset", async (req, res) => {
         });
         break;
       case "Student":
-        await prisma.student.updateMany({
-          where: {
-            OR: [
-              ...(recordId ? [{ id: recordId }] : []),
-              ...(targetEmail ? [{ parent_email: targetEmail }] : []),
-            ],
-          },
+        if (!recordId) {
+          return res.status(400).json({ error: "The student account on this reset link is invalid." });
+        }
+        await prisma.student.update({
+          where: { id: recordId },
           data: { custom_password: hashedPassword },
         });
         break;
@@ -2182,14 +2236,29 @@ router.post("/complete-password-reset", async (req, res) => {
     }
 
     // Always synchronize the User table
-    await prisma.user.updateMany({
-      where: {
+    const genericUserWhere = entityType === "Student"
+      ? {
+          OR: [
+            ...(recordId
+              ? [{ profile_type: "Student", profile_id: recordId }]
+              : []),
+            ...(admissionNumber
+              ? [{ profile_type: "Student", username: admissionNumber }]
+              : []),
+          ],
+        }
+      : {
         OR: [
           ...(recordId ? [{ id: recordId }, { profile_id: recordId }] : []),
           ...(targetEmail ? [{ email: targetEmail }, { username: targetEmail }] : []),
         ],
+      };
+    await prisma.user.updateMany({
+      where: genericUserWhere,
+      data: {
+        password: hashedPassword,
+        ...(entityType === "Student" ? { email: null } : {}),
       },
-      data: { password: hashedPassword },
     });
 
     return res.json({
