@@ -1,16 +1,7 @@
 import prisma from "../config/prisma.js";
 
-export const isInactivePortalStatus = (status) =>
-  [
-    "inactive",
-    "deactivated",
-    "terminated",
-    "suspended",
-    "withdrawn",
-    "graduated",
-    "on leave",
-    "on_leave",
-  ].includes(String(status || "").trim().toLowerCase());
+const isActivePortalStatus = (status) =>
+  String(status || "").trim().toLowerCase() === "active";
 
 const emailCondition = (email) =>
   email ? { email: { equals: email, mode: "insensitive" } } : null;
@@ -38,7 +29,7 @@ export async function hasActivePortalAccess(user, database = prisma) {
         })
       : [];
     return students.length > 0 &&
-      !students.some(({ status }) => isInactivePortalStatus(status));
+      students.every(({ status }) => isActivePortalStatus(status));
   }
 
   if (isParent) {
@@ -58,7 +49,7 @@ export async function hasActivePortalAccess(user, database = prisma) {
         })
       : [];
     return parents.length > 0 &&
-      !parents.some(({ status }) => isInactivePortalStatus(status));
+      parents.every(({ status }) => isActivePortalStatus(status));
   }
 
   if (profileType === "adminuser" || profileType === "admin") return true;
@@ -85,8 +76,8 @@ export async function hasActivePortalAccess(user, database = prisma) {
       where: { OR: teacherConditions },
       select: { status: true },
     });
-    if ((profileType === "teacher" || user.teacher_type) && !teachers.length) return false;
-    if (teachers.some(({ status }) => isInactivePortalStatus(status))) return false;
+    if (isTeacher && !teachers.length) return false;
+    if (teachers.some(({ status }) => !isActivePortalStatus(status))) return false;
   }
 
   const staffConditions = [
@@ -103,7 +94,7 @@ export async function hasActivePortalAccess(user, database = prisma) {
     });
     if (
       (isNonAcademicStaff && !staffRecords.length) ||
-      staffRecords.some(({ status }) => isInactivePortalStatus(status))
+      staffRecords.some(({ status }) => !isActivePortalStatus(status))
     ) {
       return false;
     }
@@ -120,7 +111,7 @@ export async function hasActivePortalAccess(user, database = prisma) {
       where: { OR: staffRoleConditions },
       select: { status: true },
     });
-    if (staffRoles.some(({ status }) => isInactivePortalStatus(status))) return false;
+    if (staffRoles.some(({ status }) => !isActivePortalStatus(status))) return false;
   }
 
   return true;

@@ -91,6 +91,21 @@ test("denies login and session access for non-active students", async () => {
   );
 });
 
+test("denies student accounts unless their status is explicitly active", async () => {
+  const database = {
+    student: { findMany: async () => [{ status: "Pending" }] },
+  };
+
+  assert.equal(
+    await hasActivePortalAccess({
+      id: "student-100",
+      profile_type: "Student",
+      role: "student",
+    }, database),
+    false,
+  );
+});
+
 test("denies login and session access for inactive parents", async () => {
   const database = {
     parent: { findMany: async () => [{ status: "Inactive" }] },
@@ -101,6 +116,38 @@ test("denies login and session access for inactive parents", async () => {
       id: "parent-100",
       profile_type: "Parent",
       role: "parent",
+    }, database),
+    false,
+  );
+});
+
+test("denies teacher-role accounts with no matching active teacher profile", async () => {
+  const database = {
+    teacher: { findMany: async () => [] },
+    nonAcademicStaff: { findMany: async () => [] },
+    staffRole: { findMany: async () => [{ status: "Active" }] },
+  };
+
+  assert.equal(
+    await hasActivePortalAccess({
+      username: "T-100",
+      role: "teacher",
+    }, database),
+    false,
+  );
+});
+
+test("denies linked staff roles unless their status is explicitly active", async () => {
+  const database = {
+    teacher: { findMany: async () => [{ status: "Active" }] },
+    staffRole: { findMany: async () => [{ status: null }] },
+  };
+
+  assert.equal(
+    await hasActivePortalAccess({
+      profile_type: "Teacher",
+      profile_id: "teacher-100",
+      role: "teacher",
     }, database),
     false,
   );
